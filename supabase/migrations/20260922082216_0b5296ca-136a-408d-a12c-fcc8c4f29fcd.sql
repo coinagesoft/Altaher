@@ -1,0 +1,1 @@
+ALTER TABLE public.travel_details ADD COLUMN IF NOT EXISTS arrival_date DATE;

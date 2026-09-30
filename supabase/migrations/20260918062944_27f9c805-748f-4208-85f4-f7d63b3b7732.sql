@@ -1,0 +1,12 @@
+REVOKE ALL ON FUNCTION public.has_role(uuid, public.app_role) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.claim_initial_admin() FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.assert_role(public.app_role[]) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.add_candidate(text,text,text,text,text[],numeric,numeric,text,date) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.update_candidate_details(uuid,text,text,text,text[],numeric,numeric,text,date) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.append_candidate_remark(uuid,text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.record_candidate_document(uuid,uuid,text,text,date) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.assign_candidate_to_project(uuid,uuid) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.change_candidate_stage(uuid,public.candidate_status) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.set_travel_details(uuid,date,text,text,text) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.add_stage_requirement(uuid,public.requirement_stage,text,public.document_category) FROM PUBLIC, anon;
+REVOKE ALL ON FUNCTION public.deactivate_document_type(uuid) FROM PUBLIC, anon;

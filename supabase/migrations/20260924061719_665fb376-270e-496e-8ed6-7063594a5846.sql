@@ -1,0 +1,1 @@
+ALTER TABLE public.travel_details ADD COLUMN IF NOT EXISTS connections jsonb NOT NULL DEFAULT '[]'::jsonb;

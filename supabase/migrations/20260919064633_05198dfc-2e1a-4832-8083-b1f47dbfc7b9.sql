@@ -1,0 +1,136 @@
+CREATE TABLE public.trades (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  name text NOT NULL,
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT trades_name_unique UNIQUE (name)
+);
+GRANT SELECT ON public.trades TO authenticated;
+GRANT ALL ON public.trades TO service_role;
+ALTER TABLE public.trades ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Staff view trades" ON public.trades FOR SELECT TO authenticated USING (true);
+
+CREATE TABLE public.trade_categories (
+  id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+  trade_id uuid NOT NULL REFERENCES public.trades(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  created_by uuid,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT trade_categories_unique UNIQUE (trade_id, name)
+);
+GRANT SELECT ON public.trade_categories TO authenticated;
+GRANT ALL ON public.trade_categories TO service_role;
+ALTER TABLE public.trade_categories ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Staff view trade categories" ON public.trade_categories FOR SELECT TO authenticated USING (true);
+
+ALTER TABLE public.candidates ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE public.project_trade_requirements ADD COLUMN IF NOT EXISTS category text NOT NULL DEFAULT '';
+ALTER TABLE public.project_trade_requirements DROP CONSTRAINT IF EXISTS project_trade_requirements_project_id_trade_key;
+ALTER TABLE public.project_trade_requirements ADD CONSTRAINT project_trade_requirements_unique UNIQUE (project_id, trade, category);
+
+INSERT INTO public.trades(name) VALUES
+  ('AC TECHNICIAN'),
+  ('ACCOUNTANT'),
+  ('ADMINISTRATOR'),
+  ('BOILERMAKER'),
+  ('CARPENTER'),
+  ('CHARGEHAND'),
+  ('CHEF / COOK'),
+  ('CRANE OPERATOR'),
+  ('DOCUMENTS CONTROLLER'),
+  ('DRAUGHTSMAN'),
+  ('DRIVER'),
+  ('ELECTRICAL TECHNICIAN'),
+  ('ELECTRICIAN'),
+  ('ENGINEER'),
+  ('EQUIPMENT OPERATOR'),
+  ('FABRICATOR'),
+  ('FITTER'),
+  ('FOREMAN'),
+  ('GRINDER'),
+  ('HD MECHANIC'),
+  ('HELPER'),
+  ('HSE'),
+  ('INSTRUMENT TECHNICIAN'),
+  ('INSULATOR'),
+  ('LAND SURVEYOR'),
+  ('LOGISTICS'),
+  ('MASON'),
+  ('MATERIAL CONTROLLER'),
+  ('MECHANICAL TECHNICIAN'),
+  ('OPERATOR'),
+  ('PAINTING & INSULATION'),
+  ('PLASTICIAN'),
+  ('PLUMBER'),
+  ('PROJECT MANAGER'),
+  ('QA_QC INSPECTOR'),
+  ('QUANTITY SURVEYOR'),
+  ('RIGGER'),
+  ('SALES'),
+  ('SCAFFOLDER'),
+  ('STEEL ERECTOR'),
+  ('STORES KEEPER'),
+  ('SUPERVISOR'),
+  ('WELDER') ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO public.trade_categories(trade_id,name) VALUES
+  ((SELECT id FROM public.trades WHERE name='CARPENTER'),'SHUTTERING'),
+  ((SELECT id FROM public.trades WHERE name='CARPENTER'),'FURNITURE'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'GENERAL'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'SCAFFOLDING'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'E & I'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'CIVIL'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'STRUCTURE'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'MECHANICAL'),
+  ((SELECT id FROM public.trades WHERE name='CHARGEHAND'),'WELDING'),
+  ((SELECT id FROM public.trades WHERE name='DRIVER'),'LIGHT'),
+  ((SELECT id FROM public.trades WHERE name='DRIVER'),'MEDIUM'),
+  ((SELECT id FROM public.trades WHERE name='DRIVER'),'HEAVY'),
+  ((SELECT id FROM public.trades WHERE name='ENGINEER'),'MECHANICAL'),
+  ((SELECT id FROM public.trades WHERE name='ENGINEER'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='ENGINEER'),'CIVIL'),
+  ((SELECT id FROM public.trades WHERE name='EQUIPMENT OPERATOR'),'HEAVY EQUIPMENT'),
+  ((SELECT id FROM public.trades WHERE name='FABRICATOR'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='FABRICATOR'),'STRUCTURAL'),
+  ((SELECT id FROM public.trades WHERE name='FITTER'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='FITTER'),'STRUCTURAL'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'GENERAL'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'SCAFFOLDING'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'E & I'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'CIVIL'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'STRUCTURE'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'MECHANICAL'),
+  ((SELECT id FROM public.trades WHERE name='FOREMAN'),'WELDING'),
+  ((SELECT id FROM public.trades WHERE name='HD MECHANIC'),'DIESEL'),
+  ((SELECT id FROM public.trades WHERE name='HD MECHANIC'),'HYDRAULIC'),
+  ((SELECT id FROM public.trades WHERE name='HD MECHANIC'),'CRANE'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'GENERAL'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'SCAFFOLDING'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'E & I'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'CIVIL'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'STRUCTURE'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'MECHANICAL'),
+  ((SELECT id FROM public.trades WHERE name='HELPER'),'WELDING'),
+  ((SELECT id FROM public.trades WHERE name='HSE'),'OFFICER'),
+  ((SELECT id FROM public.trades WHERE name='HSE'),'MANAGER'),
+  ((SELECT id FROM public.trades WHERE name='LOGISTICS'),'COORDINATOR'),
+  ((SELECT id FROM public.trades WHERE name='MASON'),'BLOCK & TILE'),
+  ((SELECT id FROM public.trades WHERE name='OPERATOR'),'HEAVY EQUIPMENT'),
+  ((SELECT id FROM public.trades WHERE name='QA_QC INSPECTOR'),'WELDING'),
+  ((SELECT id FROM public.trades WHERE name='QA_QC INSPECTOR'),'MECHANICAL'),
+  ((SELECT id FROM public.trades WHERE name='QA_QC INSPECTOR'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='QA_QC INSPECTOR'),'CIVIL'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'GENERAL'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'PIPING'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'SCAFFOLDING'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'E & I'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'CIVIL'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'STRUCTURE'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'MECHANICAL'),
+  ((SELECT id FROM public.trades WHERE name='SUPERVISOR'),'WELDING'),
+  ((SELECT id FROM public.trades WHERE name='WELDER'),'GTAW'),
+  ((SELECT id FROM public.trades WHERE name='WELDER'),'SMAW'),
+  ((SELECT id FROM public.trades WHERE name='WELDER'),'FCAW') ON CONFLICT (trade_id,name) DO NOTHING;

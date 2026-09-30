@@ -1,0 +1,1 @@
+ALTER TABLE public.mobilisation_clearances ADD COLUMN IF NOT EXISTS police_date date;

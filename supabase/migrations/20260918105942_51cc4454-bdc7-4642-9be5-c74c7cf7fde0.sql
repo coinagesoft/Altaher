@@ -1,0 +1,2 @@
+ALTER TABLE public.candidates DROP COLUMN ex_site_1;
+ALTER TABLE public.candidates ADD COLUMN candidate_kind TEXT NOT NULL DEFAULT 'New Candidate' CHECK (candidate_kind IN ('New Candidate', 'Ex Candidate'));

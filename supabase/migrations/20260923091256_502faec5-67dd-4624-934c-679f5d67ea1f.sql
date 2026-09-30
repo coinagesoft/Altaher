@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS candidates_employee_number_key ON public.candidates (employee_number) WHERE employee_number IS NOT NULL;

@@ -1,0 +1,1 @@
+ALTER TABLE public.candidates ADD COLUMN reference TEXT; ALTER TABLE public.travel_details ADD COLUMN ticket_number TEXT;

@@ -1,0 +1,2 @@
+CREATE POLICY "Staff upload candidate documents" ON storage.objects FOR INSERT TO authenticated WITH CHECK (bucket_id = 'candidate-documents');
+CREATE POLICY "Staff read candidate documents" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'candidate-documents');
