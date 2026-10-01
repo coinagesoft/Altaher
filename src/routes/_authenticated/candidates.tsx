@@ -1,3 +1,4 @@
+import { readPassportLocally } from "@/lib/passport-mrz";
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -25,7 +26,7 @@ import {
   checkSimilarCandidate,
   deleteCandidate,
   downloadCandidateDocumentsZip,
-  readPassportDetails,
+  // readPassportDetails,
   extractCandidatePhoto,
   getCandidatePhotoLink,
   markCandidateAvailable,
@@ -559,42 +560,32 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
     : emptyForm);
   const [error, setError] = useState("");
   const [duplicate, setDuplicate] = useState("");
-  const readPassportFn = useServerFn(readPassportDetails);
+  // const readPassportFn = useServerFn(readPassportDetails);
   const [reading, setReading] = useState(false);
   const [readState, setReadState] = useState("");
 
-  async function readPassport() {
-    const file = files["Passport"];
-    if (!file) return;
-    setReading(true);
-    setReadState("");
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(new Error("The file could not be read."));
-        reader.readAsDataURL(file);
-      });
-      const details = await readPassportFn({ data: { dataUrl } });
-      setForm((current) => ({
-        ...current,
-        surname: details.surname || current.surname,
-        name: details.name || current.name,
-        dateOfBirth: details.dateOfBirth || current.dateOfBirth,
-        placeOfBirth: details.placeOfBirth || current.placeOfBirth,
-        address: details.address || current.address,
-        passportNumber: details.passportNumber || current.passportNumber,
-        passportIssueDate: details.passportIssueDate || current.passportIssueDate,
-        passportExpiry: details.passportExpiry || current.passportExpiry,
-        passportPlaceOfIssue: details.passportPlaceOfIssue || current.passportPlaceOfIssue,
-      }));
-      setReadState("Filled in from the passport copy — please check and edit anything that looks wrong.");
-    } catch (readError) {
-      setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read.");
-    } finally {
-      setReading(false);
-    }
+async function readPassport() {
+  const file = files["Passport"];
+  if (!file) return;
+  setReading(true);
+  setReadState("");
+  try {
+    const details = await readPassportLocally(file);
+    setForm((current) => ({
+      ...current,
+      surname: details.surname || current.surname,
+      name: details.name || current.name,
+      dateOfBirth: details.dateOfBirth || current.dateOfBirth,
+      passportNumber: details.passportNumber || current.passportNumber,
+      passportExpiry: details.passportExpiry || current.passportExpiry,
+    }));
+    setReadState("Filled in from the passport copy — please check and edit anything that looks wrong. Place of birth, issue date, place of issue and address are not on the machine-readable lines, so fill those by hand.");
+  } catch (readError) {
+    setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read.");
+  } finally {
+    setReading(false);
   }
+}
   const checkPassport = useServerFn(checkPassportNumber);
   const passportNumber = form.passportNumber.trim();
 
