@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, Download, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronLeft, ChevronRight, Download, FileSpreadsheet, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import * as XLSX from "xlsx";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 import { AppShell } from "@/components/app-shell";
 import { DocumentLink } from "@/components/document-link";
@@ -18,6 +20,7 @@ import {
   addCandidate,
   appendCandidateRemark,
   assignCandidateToProject,
+  bulkUpsertCandidates,
   checkPassportNumber,
   checkSimilarCandidate,
   deleteCandidate,
@@ -52,6 +55,8 @@ export const Route = createFileRoute("/_authenticated/candidates")({
 
 const emptyForm = { candidateNumber: "", surname: "", name: "", dateOfBirth: "", placeOfBirth: "", address: "", email: "", phone: "", contactNo2: "", reference: "", bankHolder: "", bankAccount: "", bankName: "", bankBranch: "", bankIfsc: "", bankSwift: "", candidateKind: "New Candidate" as "New Candidate" | "Ex Candidate", trade: "", category: "", experienceYears: "0", rating: "0", passportNumber: "", passportIssueDate: "", passportExpiry: "", passportPlaceOfIssue: "", remark: "" };
 
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+
 function ageFrom(dob: string | null | undefined) {
   if (!dob) return "—";
   const birth = new Date(dob);
@@ -68,6 +73,7 @@ function CandidatesPage() {
   const workspace = useWorkspace();
   const refresh = useRefreshWorkspace();
   const setUnavailable = useServerFn(setCandidateUnavailable);
+  const executeBulkUpsert = useServerFn(bulkUpsertCandidates);
 
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<string>("all");
@@ -78,13 +84,72 @@ function CandidatesPage() {
   const [availableOnly, setAvailableOnly] = useState(false);
   const [sortBy, setSortBy] = useState<"name" | "rating" | "trade">("name");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
   const search = Route.useSearch() as { candidate?: string };
   const [selectedId, setSelectedId] = useState<string | null>(search.candidate ?? null);
   const [creating, setCreating] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
+  // Bulk Upload states
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{
+    total: number;
+    created: number;
+    updated: number;
+    failed: number;
+    errors: { row: number; error: string }[];
+  } | null>(null);
+
   const [pendingDelete, setPendingDelete] = useState<Candidate | null>(null);
   const removeCandidate = useServerFn(deleteCandidate);
+
+  // Go back to the first page whenever the result set or page size changes
+  useEffect(() => {
+    setPage(1);
+  }, [query, status, trade, categories, minRating, maxRating, availableOnly, sortBy, sortDir, pageSize]);
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setUploadResult(null);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+      if (!firstSheetName) {
+        alert("The uploaded Excel file contains no worksheets.");
+        setUploading(false);
+        return;
+      }
+      const sheet = workbook.Sheets[firstSheetName];
+      if (!sheet) {
+        alert("Could not read the worksheet data.");
+        setUploading(false);
+        return;
+      }
+      const rawRows = XLSX.utils.sheet_to_json(sheet);
+
+      if (!rawRows || rawRows.length === 0) {
+        alert("The selected Excel sheet contains no data rows.");
+        setUploading(false);
+        return;
+      }
+
+      const result = await executeBulkUpsert({ data: { rows: rawRows } });
+      setUploadResult(result);
+      refresh();
+    } catch (err: any) {
+      alert("Error reading Excel file: " + (err.message || String(err)));
+    } finally {
+      setUploading(false);
+      event.target.value = "";
+    }
+  };
 
   const toggleStatus = useMutation({
     mutationFn: async ({ candidateId, unavailable }: { candidateId: string; unavailable: boolean }) => {
@@ -135,6 +200,12 @@ function CandidatesPage() {
     });
   }, [data, query, status, trade, categories, minRating, maxRating, availableOnly, sortBy, sortDir]);
 
+  // Pagination (client-side)
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, totalPages); // clamps if rows get deleted
+  const pageStart = (currentPage - 1) * pageSize;
+  const pageRows = useMemo(() => filtered.slice(pageStart, pageStart + pageSize), [filtered, pageStart, pageSize]);
+
   const selected = (data?.candidates ?? []).find((candidate) => candidate.id === selectedId) ?? null;
   const projectName = (id: string | null) => data?.projects.find((project) => project.id === id)?.name ?? "—";
 
@@ -148,9 +219,20 @@ function CandidatesPage() {
           </p>
         </div>
         {(role === "Data Entry" || role === "Recruiter" || isAdminRole(role)) && (
-          <Button onClick={() => { setCreating(true); setSelectedId(null); }}>
-            <Plus className="size-4" /> New candidate
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setBulkModalOpen(true);
+                setUploadResult(null);
+              }}
+            >
+              <FileSpreadsheet className="size-4 mr-1.5 text-emerald-600" /> Bulk Import Excel
+            </Button>
+            <Button onClick={() => { setCreating(true); setSelectedId(null); }}>
+              <Plus className="size-4" /> New candidate
+            </Button>
+          </div>
         )}
       </div>
 
@@ -227,7 +309,7 @@ function CandidatesPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {filtered.map((candidate) => (
+            {pageRows.map((candidate) => (
               <tr key={candidate.id} className="cursor-pointer transition-colors hover:bg-accent/50" onClick={() => { setSelectedId(candidate.id); setCreating(false); }}>
                 <td className="px-4 py-3 font-medium">{candidate.surname || "—"}</td>
                 <td className="px-4 py-3">
@@ -286,6 +368,44 @@ function CandidatesPage() {
         </table>
       </div>
 
+      {filtered.length > 0 ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm">
+          <p className="text-muted-foreground">
+            Showing {pageStart + 1}–{Math.min(pageStart + pageSize, filtered.length)} of {filtered.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Rows per page</span>
+            <Select value={String(pageSize)} onValueChange={(value) => setPageSize(Number(value))}>
+              <SelectTrigger className="h-8 w-[72px]"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((size) => <SelectItem key={size} value={String(size)}>{size}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-8"
+              aria-label="Previous page"
+              disabled={currentPage <= 1}
+              onClick={() => setPage(currentPage - 1)}
+            >
+              <ChevronLeft className="size-4" />
+            </Button>
+            <span className="min-w-[90px] text-center text-xs text-muted-foreground">Page {currentPage} of {totalPages}</span>
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-8"
+              aria-label="Next page"
+              disabled={currentPage >= totalPages}
+              onClick={() => setPage(currentPage + 1)}
+            >
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -306,6 +426,73 @@ function CandidatesPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Bulk Upload Modal */}
+      <Dialog open={bulkModalOpen} onOpenChange={setBulkModalOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="size-5 text-emerald-600" />
+              Bulk Upload Candidates
+            </DialogTitle>
+            <DialogDescription>
+              Upload your Excel sheet (.xlsx, .xls). If a candidate already exists by passport number or candidate ID, their details will be updated without duplicates.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            {!uploading && !uploadResult && (
+              <label className="flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-lg cursor-pointer hover:bg-muted/50 transition">
+                <Upload className="size-8 text-muted-foreground mb-2" />
+                <span className="text-sm font-medium">Click to select Excel file</span>
+                <span className="text-xs text-muted-foreground mt-1">Supports Al Taher - Database (Responses).xlsx</span>
+                <input
+                  type="file"
+                  accept=".xlsx, .xls, .csv"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                />
+              </label>
+            )}
+
+            {uploading && (
+              <div className="flex flex-col items-center justify-center py-8 space-y-2">
+                <Loader2 className="size-8 animate-spin text-primary" />
+                <p className="text-sm font-medium">Processing & Upserting Candidates...</p>
+                <p className="text-xs text-muted-foreground">Checking duplicates and updating database</p>
+              </div>
+            )}
+
+            {uploadResult && (
+              <div className="space-y-3">
+                <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-sm space-y-1.5">
+                  <div className="flex items-center gap-2 font-semibold text-emerald-700">
+                    <CheckCircle2 className="size-4" /> Import Complete
+                  </div>
+                  <div>• Total rows read: <strong>{uploadResult.total}</strong></div>
+                  <div>• New candidates added: <strong>{uploadResult.created}</strong></div>
+                  <div>• Existing candidates updated: <strong>{uploadResult.updated}</strong></div>
+                  {uploadResult.failed > 0 && (
+                    <div className="text-amber-800 font-medium">• Rows skipped / errors: {uploadResult.failed}</div>
+                  )}
+                </div>
+
+                {uploadResult.errors?.length > 0 && (
+                  <div className="max-h-32 overflow-y-auto rounded border p-2 text-xs text-red-600 bg-red-50">
+                    {uploadResult.errors.map((err, idx) => (
+                      <div key={idx}>Row {err.row}: {err.error}</div>
+                    ))}
+                  </div>
+                )}
+
+                <Button className="w-full" onClick={() => setBulkModalOpen(false)}>
+                  Close
+                </Button>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {creating ? <CandidateForm role={role} onClose={() => setCreating(false)} onSaved={() => { setCreating(false); refresh(); }} /> : null}
       {selected ? <CandidateDetail key={selected.id} candidate={selected} role={role} onClose={() => setSelectedId(null)} /> : null}
@@ -547,7 +734,7 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
         <Field label="Surname"><Input value={form.surname} onChange={(event) => setForm({ ...form, surname: event.target.value })} /></Field>
         <Field label="Name"><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
         <Field label="Date of birth"><Input type="date" value={form.dateOfBirth} onChange={(event) => setForm({ ...form, dateOfBirth: event.target.value })} /></Field>
-        <Field label={`Age${form.dateOfBirth ? "" : ""}`}><Input value={ageFrom(form.dateOfBirth)} readOnly /></Field>
+        <Field label="Age"><Input value={ageFrom(form.dateOfBirth)} readOnly /></Field>
         <Field label="Place of birth"><Input value={form.placeOfBirth} onChange={(event) => setForm({ ...form, placeOfBirth: event.target.value })} /></Field>
         <Field label="Address" className="sm:col-span-2"><Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} /></Field>
         <Field label="Contact no. 1"><Input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></Field>

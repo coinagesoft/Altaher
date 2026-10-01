@@ -6,6 +6,7 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 const roles = ["Data Entry", "Recruiter", "Project Coordinator", "Mobilisation Executive", "Admin", "Super Admin"] as const;
 const statuses = ["Available", "Unavailable", "Assigned", "Shortlisted", "Interview", "Practical Test", "Passed", "Selected", "Rejected", "Medical", "Visa", "Mobilisation", "On Site", "R&R", "EOC"] as const;
 const requirementStages = ["Assigned", "Shortlisted", "Interview", "Selected", "Medical", "Visa", "Mobilisation"] as const;
+
 const candidateInput = z.object({
   candidateNumber: z.string().trim().max(40).optional(),
   surname: z.string().trim().max(120).optional(),
@@ -64,7 +65,6 @@ export const checkPassportNumber = createServerFn({ method: "POST" })
     return { duplicate: true as const, candidateNumber: match.candidate_number as string, name: [match.surname, match.name].filter(Boolean).join(" ") };
   });
 
-
 const normText = (value: string | null | undefined) => (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 
 async function findLookAlikes(supabaseAdmin: any, input: { name?: string | undefined; surname?: string | undefined; dateOfBirth?: string | undefined; address?: string | undefined }, candidateId?: string) {
@@ -72,7 +72,8 @@ async function findLookAlikes(supabaseAdmin: any, input: { name?: string | undef
   let query = supabaseAdmin.from("candidates").select("id,candidate_number,name,surname,date_of_birth,address,passport_number").eq("date_of_birth", input.dateOfBirth);
   if (candidateId) query = query.neq("id", candidateId);
   const { data: rows } = await query;
-  return (rows ?? []).filter((row: any) => normText(row.name) === normText(input.name) && normText(row.surname) === normText(input.surname) && normText(row.address) === normText(input.address))
+  return (rows ?? [])
+    .filter((row: any) => normText(row.name) === normText(input.name) && normText(row.surname) === normText(input.surname) && normText(row.address) === normText(input.address))
     .map((row: any) => ({ id: row.id as string, candidateNumber: row.candidate_number as string, name: [row.name, row.surname].filter(Boolean).join(" "), passportNumber: (row.passport_number ?? "") as string }));
 }
 
@@ -126,7 +127,7 @@ function candidateValues(data: z.infer<typeof candidateInput>) {
   };
 }
 
-async function ensureTradeOption(supabaseAdmin: any, userId: string, trade?: string, category?: string) {
+async function ensureTradeOption(supabaseAdmin: any, userId: string, trade?: string | null, category?: string | null) {
   const tradeName = (trade ?? "").trim();
   if (!tradeName) return null;
   let { data: row } = await supabaseAdmin.from("trades").select("id").ilike("name", tradeName).maybeSingle();
@@ -233,6 +234,228 @@ export const updateCandidateDetails = createServerFn({ method: "POST" })
     return candidate;
   });
 
+export const bulkUpsertCandidates = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input: { rows: any[] }) => input)
+  .handler(async ({ data: { rows }, context }) => {
+    await requireRole(context, ["Data Entry", "Recruiter", "Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    let createdCount = 0;
+    let updatedCount = 0;
+    const errors: { row: number; error: string }[] = [];
+
+    const parseExcelDate = (val: any): string | null => {
+      if (!val) return null;
+      if (typeof val === "number") {
+        const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+        return isNaN(date.getTime()) ? null : (date.toISOString().split("T")[0] ?? null);
+      }
+      if (val instanceof Date && !isNaN(val.getTime())) {
+        return val.toISOString().split("T")[0] ?? null;
+      }
+      const str = String(val).trim();
+      const direct = new Date(str);
+      if (!isNaN(direct.getTime()) && direct.getFullYear() > 1900) {
+        return direct.toISOString().split("T")[0] ?? null;
+      }
+      const parts = str.split(/[-/.]/);
+      if (parts.length === 3) {
+        let d = parts[0] ?? "";
+        let m = parts[1] ?? "";
+        let y = parts[2] ?? "";
+        if (d.length === 4) {
+          const temp = d;
+          d = y;
+          y = temp;
+        }
+        const parsed = new Date(`${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`);
+        if (!isNaN(parsed.getTime())) return parsed.toISOString().split("T")[0] ?? null;
+      }
+      return null;
+    };
+
+    const cleanPhone = (val: any): string | null => {
+      if (!val) return null;
+      const str = String(val).replace(/\.0$/, "").trim();
+      return str || null;
+    };
+
+    // 1. Fetch ALL existing candidates by paginating through all rows
+    const passportMap = new Map<string, any>();
+    const candNoMap = new Map<string, any>();
+    let highestCandNum = 0;
+
+    let from = 0;
+    const step = 1000;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: chunk, error: fetchErr } = await supabaseAdmin
+        .from("candidates")
+        .select("id, candidate_number, passport_number")
+        .range(from, from + step - 1);
+
+      if (fetchErr) throw fetchErr;
+
+      for (const c of chunk ?? []) {
+        if (c.passport_number?.trim()) {
+          passportMap.set(c.passport_number.trim().toUpperCase(), c);
+        }
+        if (c.candidate_number?.trim()) {
+          candNoMap.set(c.candidate_number.trim().toUpperCase(), c);
+          const match = /^C-(\d+)$/i.exec(c.candidate_number.trim());
+          if (match && match[1]) {
+            const num = parseInt(match[1], 10);
+            if (!isNaN(num) && num > highestCandNum) {
+              highestCandNum = num;
+            }
+          }
+        }
+      }
+
+      if (!chunk || chunk.length < step) {
+        hasMore = false;
+      } else {
+        from += step;
+      }
+    }
+
+    // 2. Process rows
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowIdx = i + 2;
+
+      try {
+        const getVal = (colNames: string[]) => {
+          for (const k of Object.keys(row)) {
+            const cleanKey = k.trim().toLowerCase();
+            for (const target of colNames) {
+              if (cleanKey === target.toLowerCase()) return row[k];
+            }
+          }
+          return undefined;
+        };
+
+        const firstName = String(getVal(["First name (As per passport)", "First Name", "Name"]) ?? "").trim();
+        const lastName = String(getVal(["Last name (As per passport)", "Last Name", "Surname"]) ?? "").trim();
+        const passport = String(getVal(["Passport No.", "Passport Number", "Passport"]) ?? "").trim().toUpperCase();
+        const candidateNo = String(getVal(["Candidate ID Assigned", "Candidate ID", "Candidate Number"]) ?? "").trim().toUpperCase();
+
+        if (!firstName && !lastName && !passport) {
+          continue;
+        }
+
+        const dob = parseExcelDate(getVal(["Date of Birth", "DOB"]));
+        const doi = parseExcelDate(getVal(["Date of Issue", "Passport Issue Date"]));
+        const doe = parseExcelDate(getVal(["Date of Expiry", "Passport Expiry"]));
+        const placeOfIssue = String(getVal(["Place of Issue"]) ?? "").trim() || null;
+        const phone1 = cleanPhone(getVal(["Contact No. 1", "Phone", "Mobile"]));
+        const phone2 = cleanPhone(getVal(["Contact No. 2", "Alternate Contact"]));
+        const emailRaw = String(getVal(["Email ID", "Email"]) ?? "").trim().toLowerCase();
+        const email = emailRaw && emailRaw.includes("@") ? emailRaw : null;
+        const trade = String(getVal(["Discipline", "Trade"]) ?? "").trim() || null;
+        const category = String(getVal(["Category (eg. PIPING, TIG, ARC)", "Category"]) ?? "").trim() || null;
+
+        const overseasMonths = Number(getVal(["Overseas (In Months)"])) || 0;
+        const indiaMonths = Number(getVal(["In India  (In Months)", "In India (In Months)"])) || 0;
+        const experienceYears = Math.min(70, Math.max(0, Math.round(((overseasMonths + indiaMonths) / 12) * 10) / 10));
+
+        const techRating = Number(getVal(["Technical Rating"])) || 0;
+        const engRating = Number(getVal(["English Rating"])) || 0;
+        const rating = techRating || engRating
+          ? Math.min(10, Math.max(0, Math.round(((techRating + engRating) / (techRating && engRating ? 2 : 1)) * 10) / 10))
+          : 0;
+
+        const exNew = String(getVal(["Ex / New", "Candidate Kind"]) ?? "").toUpperCase();
+        const candidateKind = exNew.includes("EX") ? "Ex Candidate" : "New Candidate";
+        const stateRes = String(getVal(["State of Residence"]) ?? "").trim();
+        const countryRes = String(getVal(["Country of Residence"]) ?? "").trim();
+        const address = [stateRes, countryRes].filter(Boolean).join(", ") || null;
+        const reference = String(getVal(["Reference"]) ?? "").trim() || null;
+
+        const payload: any = {
+          name: firstName || lastName || "Unknown",
+          surname: lastName || null,
+          date_of_birth: dob,
+          place_of_birth: null,
+          address,
+          email,
+          phone: phone1,
+          contact_no_2: phone2,
+          reference,
+          candidate_kind: candidateKind,
+          trade,
+          category,
+          skills: trade ? [trade] : [],
+          experience_years: experienceYears,
+          rating,
+          passport_number: passport || null,
+          passport_issue_date: doi,
+          passport_expiry: doe,
+          passport_place_of_issue: placeOfIssue,
+          updated_at: new Date().toISOString(),
+        };
+
+        let existing = null;
+        if (passport && passportMap.has(passport)) {
+          existing = passportMap.get(passport);
+        } else if (candidateNo && candNoMap.has(candidateNo)) {
+          existing = candNoMap.get(candidateNo);
+        }
+
+        if (existing) {
+          const { error } = await supabaseAdmin
+            .from("candidates")
+            .update(payload)
+            .eq("id", existing.id);
+
+          if (error) throw error;
+
+          await ensureTradeOption(supabaseAdmin, context.userId, trade, category);
+          updatedCount++;
+        } else {
+          // Determine next unique candidate number
+          let nextNum = candidateNo;
+          if (!nextNum || candNoMap.has(nextNum)) {
+            highestCandNum += 1;
+            nextNum = `C-${String(highestCandNum).padStart(4, "0")}`;
+          }
+
+          const { data: newCand, error } = await supabaseAdmin
+            .from("candidates")
+            .insert({
+              ...payload,
+              candidate_number: nextNum,
+              status: "Available",
+              created_by: context.userId,
+            })
+            .select("id, candidate_number, passport_number")
+            .single();
+
+          if (error) throw error;
+
+          await ensureTradeOption(supabaseAdmin, context.userId, trade, category);
+          if (newCand.passport_number?.trim()) {
+            passportMap.set(newCand.passport_number.trim().toUpperCase(), newCand);
+          }
+          candNoMap.set(newCand.candidate_number.trim().toUpperCase(), newCand);
+          createdCount++;
+        }
+      } catch (err: any) {
+        errors.push({ row: rowIdx, error: err.message || "Unknown error" });
+      }
+    }
+
+    return {
+      total: rows.length,
+      created: createdCount,
+      updated: updatedCount,
+      failed: errors.length,
+      errors: errors.slice(0, 20),
+    };
+  });
+
 export const resolveDocumentType = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input) => z.object({ name: z.string().trim().min(1).max(120), category: z.enum(["candidate", "project"]).default("candidate") }).parse(input))
@@ -307,7 +530,6 @@ function documentFileName(
   const person = [candidate?.name, candidate?.surname].filter(Boolean).join(" ") || "Candidate";
   return `${person} - ${typeName}${extension}`.replace(/[\\/:*?"<>|]/g, "_");
 }
-
 
 export const downloadProjectDocumentsZip = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -539,7 +761,6 @@ export const startNewContract = createServerFn({ method: "POST" })
     const { data: numberRow } = await supabaseAdmin.from("project_employee_numbers").select("employee_number").eq("project_id", data.projectId).eq("candidate_id", data.candidateId).maybeSingle();
     const { data: updated, error } = await supabaseAdmin.from("candidates").update({ status: "Selected", current_project_id: data.projectId, rr_start_date: null, rr_days: null, employee_number: numberRow?.employee_number ?? null }).eq("id", data.candidateId).eq("status", "Available").select().single();
     if (error) throw new Error(error.message);
-    // Fresh mobilisation cycle: clear previous clearances and flight for this contract.
     await supabaseAdmin.from("mobilisation_clearances").delete().eq("candidate_id", data.candidateId).eq("project_id", data.projectId);
     await supabaseAdmin.from("travel_details").delete().eq("candidate_id", data.candidateId);
     await supabaseAdmin.from("candidate_assignments").insert({ candidate_id: data.candidateId, project_id: data.projectId, created_by: context.userId });
