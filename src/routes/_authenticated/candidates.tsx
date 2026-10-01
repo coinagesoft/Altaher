@@ -1,4 +1,3 @@
-import { readPassportLocally } from "@/lib/passport-mrz";
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -26,7 +25,6 @@ import {
   checkSimilarCandidate,
   deleteCandidate,
   downloadCandidateDocumentsZip,
-  // readPassportDetails,
   extractCandidatePhoto,
   getCandidatePhotoLink,
   markCandidateAvailable,
@@ -37,6 +35,7 @@ import {
   updateCandidateDetails,
 } from "@/lib/operations.functions";
 import { isAdminRole, STATUSES, formatDate, statusChangedAt, statusTone, useRefreshWorkspace, useWorkspace, type Candidate, type Role } from "@/lib/workspace";
+import { readPassportFile } from "@/lib/passport-ocr";
 import { CategoryMultiSelect, TradeCategoryMultiSelect, hasAllCategories, joinCategories, parseCategories, useTradeOptions } from "@/components/trade-picker";
 
 export const Route = createFileRoute("/_authenticated/candidates")({
@@ -560,32 +559,43 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
     : emptyForm);
   const [error, setError] = useState("");
   const [duplicate, setDuplicate] = useState("");
-  // const readPassportFn = useServerFn(readPassportDetails);
   const [reading, setReading] = useState(false);
   const [readState, setReadState] = useState("");
+  const [readTone, setReadTone] = useState<"info" | "ok" | "warn" | "error">("info");
 
-async function readPassport() {
-  const file = files["Passport"];
-  if (!file) return;
-  setReading(true);
-  setReadState("");
-  try {
-    const details = await readPassportLocally(file);
-    setForm((current) => ({
-      ...current,
-      surname: details.surname || current.surname,
-      name: details.name || current.name,
-      dateOfBirth: details.dateOfBirth || current.dateOfBirth,
-      passportNumber: details.passportNumber || current.passportNumber,
-      passportExpiry: details.passportExpiry || current.passportExpiry,
-    }));
-    setReadState("Filled in from the passport copy — please check and edit anything that looks wrong. Place of birth, issue date, place of issue and address are not on the machine-readable lines, so fill those by hand.");
-  } catch (readError) {
-    setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read.");
-  } finally {
-    setReading(false);
+  async function readPassport() {
+    const file = files["Passport"];
+    if (!file) return;
+    setReading(true);
+    setReadTone("info");
+    setReadState("Reading the passport copy on this device...");
+    try {
+      const details = await readPassportFile(file, (message) => setReadState(message));
+      setForm((current) => ({
+        ...current,
+        surname: details.surname || current.surname,
+        name: details.name || current.name,
+        dateOfBirth: details.dateOfBirth || current.dateOfBirth,
+        placeOfBirth: details.placeOfBirth || current.placeOfBirth,
+        address: details.address || current.address,
+        passportNumber: details.passportNumber || current.passportNumber,
+        passportIssueDate: details.passportIssueDate || current.passportIssueDate,
+        passportExpiry: details.passportExpiry || current.passportExpiry,
+        passportPlaceOfIssue: details.passportPlaceOfIssue || current.passportPlaceOfIssue,
+      }));
+      const verified = details.mrzVerified
+        ? "Passport no., date of birth and expiry were verified against the machine-readable lines."
+        : "The machine-readable lines could not be verified - check every field carefully.";
+      setReadTone(details.mrzVerified && details.notes.length === 0 ? "ok" : "warn");
+      setReadState(`Filled in from the passport copy. ${verified} ${details.notes.join(" ")}`.trim());
+    } catch (readError) {
+      setReadTone("error");
+      setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read. Please fill the details by hand.");
+    } finally {
+      setReading(false);
+    }
   }
-}
+
   const checkPassport = useServerFn(checkPassportNumber);
   const passportNumber = form.passportNumber.trim();
 
@@ -706,7 +716,7 @@ async function readPassport() {
               {reading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} Read details
             </Button>
           </div>
-          {readState ? <p className={`mt-2 text-xs ${readState.startsWith("Filled") ? "text-emerald-600" : "text-destructive"}`}>{readState}</p> : null}
+          {readState ? <p className={`mt-2 text-xs ${readTone === "ok" ? "text-emerald-600" : readTone === "warn" ? "text-amber-600" : readTone === "error" ? "text-destructive" : "text-muted-foreground"}`}>{readState}</p> : null}
         </section>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
