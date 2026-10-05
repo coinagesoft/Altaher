@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { askGeminiForOrientation, askGeminiForPassport, buildModelList, cleanEnvValue, GeminiPassportError } from "@/lib/passport-gemini-core";
+import { askGeminiForAddress, askGeminiForOrientation, askGeminiForPassport, buildModelList, cleanEnvValue, GeminiPassportError } from "@/lib/passport-gemini-core";
 
 export type PassportServerResult =
   | { ok: true; json: string }
@@ -13,7 +13,7 @@ export const readPassportWithGemini = createServerFn({ method: "POST" })
   .inputValidator((input) =>
     z
       .object({
-        task: z.enum(["orient", "extract"]).default("extract"),
+        task: z.enum(["orient", "extract", "address"]).default("extract"),
         images: z.array(z.string().min(100).max(8_000_000)).min(1).max(6),
         models: z.array(z.string().min(3).max(60)).max(5).optional(),
       })
@@ -27,7 +27,7 @@ export const readPassportWithGemini = createServerFn({ method: "POST" })
 
     const models = data.models && data.models.length ? data.models : buildModelList(model);
     try {
-      const run = data.task === "orient" ? askGeminiForOrientation : askGeminiForPassport;
+      const run = data.task === "orient" ? askGeminiForOrientation : data.task === "address" ? askGeminiForAddress : askGeminiForPassport;
       const parsed = await run({ apiKey, models, images: data.images });
       return { ok: true, json: JSON.stringify(parsed) };
     } catch (error) {

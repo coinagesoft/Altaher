@@ -21,6 +21,7 @@ import {
   appendCandidateRemark,
   assignCandidateToProject,
   bulkUpsertCandidates,
+  readPassportDetails,
   checkPassportNumber,
   checkSimilarCandidate,
   deleteCandidate,
@@ -36,7 +37,6 @@ import {
   updateCandidateDetails,
 } from "@/lib/operations.functions";
 import { isAdminRole, STATUSES, formatDate, statusChangedAt, statusTone, useRefreshWorkspace, useWorkspace, type Candidate, type Role } from "@/lib/workspace";
-import { readPassportFile, warmUpPassportReader } from "@/lib/passport-ocr";
 import { CategoryMultiSelect, TradeCategoryMultiSelect, hasAllCategories, joinCategories, parseCategories, useTradeOptions } from "@/components/trade-picker";
 
 export const Route = createFileRoute("/_authenticated/candidates")({
@@ -641,22 +641,23 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
     : emptyForm);
   const [error, setError] = useState("");
   const [duplicate, setDuplicate] = useState("");
+  const readPassportFn = useServerFn(readPassportDetails);
   const [reading, setReading] = useState(false);
   const [readState, setReadState] = useState("");
-  const [readTone, setReadTone] = useState<"info" | "ok" | "warn" | "error">("info");
-
-  useEffect(() => {
-    warmUpPassportReader();
-  }, []);
 
   async function readPassport() {
     const file = files["Passport"];
     if (!file) return;
     setReading(true);
-    setReadTone("info");
-    setReadState("Reading the passport copy...");
+    setReadState("");
     try {
-      const details = await readPassportFile(file, (message) => setReadState(message));
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("The file could not be read."));
+        reader.readAsDataURL(file);
+      });
+      const details = await readPassportFn({ data: { dataUrl } });
       setForm((current) => ({
         ...current,
         surname: details.surname || current.surname,
@@ -669,14 +670,9 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
         passportExpiry: details.passportExpiry || current.passportExpiry,
         passportPlaceOfIssue: details.passportPlaceOfIssue || current.passportPlaceOfIssue,
       }));
-      const verified = details.mrzVerified
-        ? "Passport no., date of birth and expiry were verified against the machine-readable lines."
-        : "Read by Gemini AI. The machine-readable lines could not be verified - check every field carefully.";
-      setReadTone(details.mrzVerified && details.notes.length === 0 && !details.engineNote ? "ok" : "warn");
-      setReadState(`Filled in from the passport copy. ${verified} ${details.engineNote} ${details.notes.join(" ")}`.replace(/\s+/g, " ").trim());
+      setReadState("Filled in from the passport copy — please check and edit anything that looks wrong.");
     } catch (readError) {
-      setReadTone("error");
-      setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read. Please fill the details by hand.");
+      setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read.");
     } finally {
       setReading(false);
     }
@@ -802,7 +798,7 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
               {reading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} Read details
             </Button>
           </div>
-          {readState ? <p className={`mt-2 text-xs ${readTone === "ok" ? "text-emerald-600" : readTone === "warn" ? "text-amber-600" : readTone === "error" ? "text-destructive" : "text-muted-foreground"}`}>{readState}</p> : null}
+          {readState ? <p className={`mt-2 text-xs ${readState.startsWith("Filled") ? "text-emerald-600" : "text-destructive"}`}>{readState}</p> : null}
         </section>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-2">

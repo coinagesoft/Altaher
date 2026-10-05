@@ -1203,6 +1203,80 @@ export const extractCandidatePhoto = createServerFn({ method: "POST" })
     return { photoPath: path };
   });
 
+export const readPassportDetails = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => z.object({ dataUrl: z.string().min(50) }).parse(input))
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Data Entry", "Recruiter", "Admin"]);
+    const prompt =
+      "Read this passport scan and return the details as JSON only, no commentary. Keys: surname, name (given names), dateOfBirth, placeOfBirth, address, passportNumber, passportIssueDate, passportExpiry, passportPlaceOfIssue. All dates in YYYY-MM-DD. Use an empty string for anything you cannot read confidently.";
+    const clean = (value?: string) => (value ?? "").trim().replace(/^["']|["']$/g, "").trim();
+    const lovableKey = clean(process.env["LOVABLE_API_KEY"]);
+    const geminiKey = clean(process.env["GEMINI_API_KEY"] || process.env["VITE_GEMINI_API_KEY"]);
+    const failMessage = "The passport copy could not be read. Please fill the details by hand.";
+
+    let text = "";
+    if (lovableKey) {
+      // Same call the Lovable-generated app made (works when running inside Lovable).
+      const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${lovableKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: data.dataUrl } }] }],
+        }),
+      });
+      if (!response.ok) throw new Error(failMessage);
+      const payload = (await response.json()) as any;
+      text = String(payload?.choices?.[0]?.message?.content ?? "");
+    } else {
+      // Self-hosted: same prompt and same model (gemini-2.5-flash), sent straight to Google's Gemini API.
+      if (!geminiKey) throw new Error("GEMINI_API_KEY is not set on the server (.env). Please fill the details by hand.");
+      const dataMatch = /^data:([^;,]+);base64,(.+)$/s.exec(data.dataUrl);
+      if (!dataMatch) throw new Error(failMessage);
+      const model = clean(process.env["PASSPORT_GEMINI_MODEL"]) || "gemini-2.5-flash";
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": geminiKey },
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: dataMatch[1], data: dataMatch[2] } }] }],
+        }),
+      });
+      if (!response.ok) {
+        console.error("[passport] Gemini error", response.status, (await response.text()).slice(0, 300));
+        throw new Error(failMessage);
+      }
+      const payload = (await response.json()) as any;
+      const parts: any[] = payload?.candidates?.[0]?.content?.parts ?? [];
+      text = parts.filter((part) => !part.thought && typeof part.text === "string").map((part) => part.text).join("");
+    }
+
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("No details could be read from the passport copy. Please fill them by hand.");
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch {
+      throw new Error("No details could be read from the passport copy. Please fill them by hand.");
+    }
+    const field = (key: string) => {
+      const value = parsed[key];
+      return typeof value === "string" ? value.trim() : "";
+    };
+    const date = (key: string) => (/^\d{4}-\d{2}-\d{2}$/.test(field(key)) ? field(key) : "");
+    return {
+      surname: field("surname"),
+      name: field("name"),
+      dateOfBirth: date("dateOfBirth"),
+      placeOfBirth: field("placeOfBirth"),
+      address: field("address"),
+      passportNumber: field("passportNumber"),
+      passportIssueDate: date("passportIssueDate"),
+      passportExpiry: date("passportExpiry"),
+      passportPlaceOfIssue: field("passportPlaceOfIssue"),
+    };
+  });
+
 export const deleteCandidate = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input) => z.object({ candidateId: z.string().uuid() }).parse(input))
