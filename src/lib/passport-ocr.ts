@@ -2,8 +2,9 @@ import { passportFileToCanvases } from "@/lib/passport-pdf";
 import type { PassportDetails } from "@/lib/passport-text";
 import { parsePassportMrz } from "@/lib/passport-mrz";
 import { GEMINI_CONFIG } from "@/lib/gemini-config";
-import { askGeminiForOrientation, askGeminiForPassport } from "@/lib/passport-gemini-core";
+import { askGeminiForAddress, askGeminiForOrientation, askGeminiForPassport } from "@/lib/passport-gemini-core";
 import { readPassportWithGemini } from "@/lib/passport-gemini.functions";
+import { orientPagesDetailed, type OrientedPage } from "@/lib/passport-orient";
 
 
 export type { PassportDetails };
@@ -205,7 +206,7 @@ function toBase64Jpeg(canvas: HTMLCanvasElement, maxSide: number, quality: numbe
 // Calling Gemini: server first (the key stays private), then straight from the browser as a backup route
 // ---------------------------------------------------------------------------------------------------------------
 
-async function callGemini(task: "orient" | "extract", images: string[], models: string[] | undefined, onProgress?: (msg: string) => void): Promise<Record<string, unknown>> {
+async function callGemini(task: "orient" | "extract" | "address", images: string[], models: string[] | undefined, onProgress?: (msg: string) => void): Promise<Record<string, unknown>> {
   let problem = "";
   let tryBrowser = true;
   try {
@@ -218,7 +219,7 @@ async function callGemini(task: "orient" | "extract", images: string[], models: 
   }
 
   if (tryBrowser && GEMINI_CONFIG.ApiKey) {
-    const run = task === "orient" ? askGeminiForOrientation : askGeminiForPassport;
+    const run = task === "orient" ? askGeminiForOrientation : task === "address" ? askGeminiForAddress : askGeminiForPassport;
     try {
       return await run({ apiKey: GEMINI_CONFIG.ApiKey, models: models ?? GEMINI_CONFIG.Models, images, onProgress });
     } catch (error) {
@@ -234,14 +235,54 @@ async function callGemini(task: "orient" | "extract", images: string[], models: 
 
 type PagePlan = { rotation: Rotation; kind: PageKind };
 
+// One OCR worker is created once and reused, so only the first passport read pays the start-up / download cost.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let ocrWorker: Promise<any> | null = null;
+function getOcrWorker() {
+  if (!ocrWorker) {
+    ocrWorker = import("tesseract.js").then((m) => m.createWorker("eng"));
+    ocrWorker.catch(() => {
+      ocrWorker = null;
+    });
+  }
+  return ocrWorker;
+}
+
+/** Call when the passport upload area is shown, so the reader is already loaded when a file is chosen. */
+export function warmUpPassportReader(): void {
+  void getOcrWorker().catch(() => undefined);
+}
+
+/** Offline OCR decides which way up each page is. Returns null if OCR is unavailable. */
+async function ocrOrient(canvases: HTMLCanvasElement[], onProgress?: (msg: string) => void): Promise<OrientedPage[] | null> {
+  try {
+    onProgress?.("Reading the pages...");
+    const worker = await getOcrWorker();
+    // Crop first: the text is bigger and the OCR is faster and more accurate.
+    return await orientPagesDetailed(canvases.map(cropToDocument), worker, onProgress);
+  } catch (error) {
+    console.warn("Offline orientation check failed, falling back to Gemini:", error);
+    return null;
+  }
+}
+
+/** Classifies a page from its OCR text (no extra Gemini call). Back page first: it also mentions "passport". */
+function kindFromText(text: string): PageKind {
+  if (/spouse|father|legal\s*guardian|file\s*no|old\s*passport|mother/i.test(text)) return "back_page";
+  if (/surname|given\s*name|date\s*of\s*birth|nationality|republic\s*of\s*india/i.test(text)) return "data_page";
+  if (/visa|nom\(s\)|pr[eé]nom|ambassad|embass/i.test(text)) return "visa";
+  return "other";
+}
+
+/** Asks Gemini what kind of page each one is (and, only for pages OCR could not read, which way up it is). */
 async function planPages(canvases: HTMLCanvasElement[], onProgress?: (msg: string) => void): Promise<PagePlan[]> {
   const fallback: PagePlan[] = canvases.map(() => ({ rotation: 0, kind: "other" }));
   try {
-    onProgress?.("Checking which way up each page is...");
-    const images = canvases.map((c) => toBase64Jpeg(c, 800, 0.7));
+    onProgress?.("Checking what each page is...");
+    const images = canvases.map((c) => toBase64Jpeg(cropToDocument(c), 1100, 0.8));
     const answer = await callGemini("orient", images, undefined, onProgress);
     const pages = Array.isArray(answer["pages"]) ? (answer["pages"] as Array<Record<string, unknown>>) : [];
-    const plan = canvases.map((_, index): PagePlan => {
+    return canvases.map((_, index): PagePlan => {
       const hit = pages.find((p) => Number(p["page"]) === index + 1) ?? pages[index];
       const raw = Number(hit?.["rotateClockwise"]);
       const rotation: Rotation = raw === 90 || raw === 180 || raw === 270 ? raw : 0;
@@ -249,9 +290,8 @@ async function planPages(canvases: HTMLCanvasElement[], onProgress?: (msg: strin
       const kind: PageKind = kindText.includes("data") ? "data_page" : kindText.includes("back") ? "back_page" : kindText.includes("visa") ? "visa" : "other";
       return { rotation, kind };
     });
-    return plan;
   } catch (error) {
-    console.warn("Page orientation check failed, sending the pages as they are:", error);
+    console.warn("Page type check failed, sending the pages as they are:", error);
     return fallback;
   }
 }
@@ -298,23 +338,51 @@ function issueFromExpiry(expiryIso: string): string {
   return validIso(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
 }
 
+/** Last-resort address reader: pulls the lines between the "Address" label and the PIN code out of the OCR text of the back page. */
+function addressFromOcrText(raw: string): string {
+  const lines = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const pinIdx = lines.findIndex((l) => /\bP[I1l]N\b\s*[:;.]?\s*\d{6}/i.test(l));
+  if (pinIdx < 0) return "";
+  let start = lines.findIndex((l) => /\bA[dl][dil]\S{0,4}ss\b/i.test(l)); // the label is often misread (Addiess, Add¥ess...)
+  if (start < 0 || start >= pinIdx) {
+    let s = pinIdx;
+    while (s > 0 && pinIdx - s < 3 && !lines[s - 1]!.includes("/")) s -= 1;
+    start = s - 1;
+  }
+  return lines
+    .slice(start + 1, pinIdx + 1)
+    .filter((l) => /[A-Za-z0-9]{3,}/.test(l) && !/name\s*of/i.test(l) && !l.includes("/"))
+    .join(" ")
+    .replace(/\s+([,.:;])/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export async function readPassportFile(file: File, onProgress?: (msg: string) => void): Promise<PassportReadResult> {
   onProgress?.("Loading passport document pages...");
   const canvases = await passportFileToCanvases(file);
 
-  // 1. find out which way up every page is, and drop visa pages
-  const plan = await planPages(canvases, onProgress);
-  let usable = canvases
-    .map((canvas, index) => ({ canvas, ...plan[index]! }))
-    .filter((page) => page.kind === "data_page" || page.kind === "back_page");
-  if (!usable.length) usable = canvases.map((canvas, index) => ({ canvas, ...plan[index]! })).filter((page) => page.kind !== "visa");
-  if (!usable.length) usable = canvases.map((canvas, index) => ({ canvas, ...plan[index]! }));
-  const expectBackPage = usable.some((page) => page.kind === "back_page");
+  // 1. turn every page upright with offline OCR and recognise the page type from its text
+  const oriented = await ocrOrient(canvases, onProgress);
+  let pages: Array<{ canvas: HTMLCanvasElement; kind: PageKind; text: string }>;
+  if (oriented && oriented.some((page) => page.readable)) {
+    pages = oriented.map((page) => ({ canvas: page.canvas, kind: page.readable ? kindFromText(page.text) : "other", text: page.text }));
+  } else {
+    // OCR not available: fall back to asking Gemini for rotation and page type.
+    const plan = await planPages(canvases, onProgress);
+    pages = canvases.map((canvas, index) => ({ canvas: rotateCanvas(canvas, plan[index]!.rotation), kind: plan[index]!.kind, text: "" }));
+  }
 
-  // 2. turn pages upright, crop the empty paper away, send at high resolution
-  const images = usable.map((page) => toBase64Jpeg(cropToDocument(rotateCanvas(page.canvas, page.rotation)), 2400, 0.92));
+  // 2. drop visa pages only - a page whose type is unclear is still sent, it might be the address page
+  let usable = pages.filter((page) => page.kind !== "visa");
+  if (!usable.length) usable = pages;
+  const hasBackPage = usable.some((page) => page.kind === "back_page");
+  const expectBackPage = hasBackPage || usable.length > 1;
 
-  // 3. read the details
+  // 3. crop the empty paper away and send at high resolution
+  const images = usable.map((page) => toBase64Jpeg(cropToDocument(page.canvas), 2400, 0.92));
+
+  // 4. read the details
   let details: PassportDetails | null = null;
   let problem = "";
   try {
@@ -325,8 +393,9 @@ export async function readPassportFile(file: File, onProgress?: (msg: string) =>
     console.warn("Gemini passport reading failed:", error);
   }
 
-  // 4. anything still missing (or the machine-readable lines unverified): ask a stronger model and merge
-  if (!details || missingFields(details, expectBackPage).length > 0 || !details.mrzVerified) {
+  // 5. anything still missing (or the machine-readable lines unverified): ask a stronger model and merge
+  const important = (d: PassportDetails) => !d.passportNumber || !d.dateOfBirth || !d.passportExpiry || (!d.surname && !d.name);
+  if (!details || important(details)) {
     try {
       onProgress?.("Double-checking the details with a stronger Gemini model...");
       const answer = await callGemini("extract", images, STRONGER_MODELS, onProgress);
@@ -343,7 +412,36 @@ export async function readPassportFile(file: File, onProgress?: (msg: string) =>
     throw new Error(`Gemini could not read the passport: ${problem || "no passport details were found on these pages."} You can fill in the details by hand.`);
   }
 
-  // 5. tidy up
+  // 5b. address: if the main reading did not return it, read the back page on its own (small, focused request),
+  //     then fall back to the page text found by the offline reader
+  if (!details.address && expectBackPage) {
+    const backPages = usable.filter((page) => page.kind === "back_page");
+    const candidates = backPages.length ? backPages : usable.filter((page) => page.kind !== "data_page");
+    for (const page of candidates) {
+      try {
+        onProgress?.("Reading the address page...");
+        const answer = await callGemini("address", [toBase64Jpeg(cropToDocument(page.canvas), 2000, 0.92)], undefined, onProgress);
+        const address = text(answer["address"]);
+        if (address) {
+          details = { ...details, address };
+          break;
+        }
+      } catch (error) {
+        console.warn("Address-only Gemini pass failed:", error);
+      }
+    }
+    if (!details.address) {
+      for (const page of candidates) {
+        const address = addressFromOcrText(page.text);
+        if (address) {
+          details = { ...details, address, notes: [...details.notes, "Address was read from the page text - please check the spelling."] };
+          break;
+        }
+      }
+    }
+  }
+
+  // 6. tidy up
   const notes: string[] = [];
   if (!details.passportIssueDate && details.passportExpiry) {
     const derived = issueFromExpiry(details.passportExpiry);
@@ -354,9 +452,9 @@ export async function readPassportFile(file: File, onProgress?: (msg: string) =>
   }
   const stillMissing = missingFields(details, expectBackPage);
   if (stillMissing.length) notes.push(`Not found on the pages: ${stillMissing.join(", ")}.`);
-  if (!expectBackPage) notes.push("The back page (address) was not found in this file.");
+  if (!details.address && !expectBackPage) notes.push("The back page (address) was not found in this file.");
 
   // Gemini's own free-text remarks are kept only when they flag a real reading doubt.
-  const doubts = details.notes.filter((n) => /differs|usual 1 letter|looked wrong|blurry|illegible|unclear|uncertain/i.test(n));
+  const doubts = details.notes.filter((n) => /differs|usual 1 letter|looked wrong|blurry|illegible|unclear|uncertain|address was read/i.test(n));
   return { ...details, notes: [...doubts, ...notes], source: "gemini", engineNote: "" };
 }

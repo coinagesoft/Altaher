@@ -23,7 +23,10 @@ async function pdfToCanvases(file: File): Promise<HTMLCanvasElement[]> {
   const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
   pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 
-  const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  // Scanned PDFs often store their text as JBIG2 layers. pdfjs decodes those with wasm files, which must be served
+// from /pdfjs-wasm/ (copied from node_modules/pdfjs-dist/wasm into public/). Without them the text layer silently
+// disappears and fields such as the address, place of birth and the machine-readable lines are never seen.
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()), wasmUrl: "/pdfjs-wasm/" }).promise;
   const pages = Math.min(pdf.numPages, MAX_PAGES);
   const canvases: HTMLCanvasElement[] = [];
   for (let n = 1; n <= pages; n++) {

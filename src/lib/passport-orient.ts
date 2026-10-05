@@ -86,30 +86,44 @@ function scoreOcr(data: unknown): number {
   return (text.match(KEYWORDS) ?? []).length * 15;
 }
 
-async function scoreCanvas(worker: OcrWorker, canvas: HTMLCanvasElement): Promise<number> {
-  const { data } = await worker.recognize(scaleCanvas(canvas, 2000), {}, { text: true, blocks: true, tsv: true });
-  return scoreOcr(data);
+async function scoreCanvas(worker: OcrWorker, canvas: HTMLCanvasElement): Promise<{ score: number; text: string }> {
+  const { data } = await worker.recognize(scaleCanvas(canvas, 1200), {}, { text: true, blocks: true, tsv: true });
+  return { score: scoreOcr(data), text: String((data as { text?: string } | undefined)?.text ?? "") };
 }
 
-/** Returns each page turned upright. Pages with no readable text are returned unchanged. */
-export async function orientPages(canvases: HTMLCanvasElement[], worker: OcrWorker, onProgress?: (message: string) => void): Promise<HTMLCanvasElement[]> {
+export type OrientedPage = { canvas: HTMLCanvasElement; rotation: Rotation; score: number; readable: boolean; text: string };
+
+/**
+ * Finds the upright rotation of every page by OCR-scoring it. Unlike asking an AI model, this does not depend on a
+ * model "imagining" an upside-down page the right way up. `readable` is false when no rotation gave usable text
+ * (blank page, photo only) - callers should not trust the rotation in that case.
+ */
+export async function orientPagesDetailed(canvases: HTMLCanvasElement[], worker: OcrWorker, onProgress?: (message: string) => void): Promise<OrientedPage[]> {
   await worker.setParameters({ tessedit_pageseg_mode: "11" }); // sparse text: robust for small documents on a big page
-  const result: HTMLCanvasElement[] = [];
+  const result: OrientedPage[] = [];
   try {
     for (let i = 0; i < canvases.length; i += 1) {
       const page = canvases[i]!;
       onProgress?.(`Checking the orientation of page ${i + 1} of ${canvases.length}...`);
-      let best: { rotation: Rotation; score: number } = { rotation: 0, score: await scoreCanvas(worker, page) };
-      if (best.score < 60) {
+      const first = await scoreCanvas(worker, page);
+      let best: { rotation: Rotation; score: number; text: string } = { rotation: 0, score: first.score, text: first.text };
+      // An upright passport page scores high straight away; anything lower might be upside down or sideways.
+      if (best.score < 150) {
         for (const rotation of [90, 180, 270] as Rotation[]) {
-          const score = await scoreCanvas(worker, rotateCanvas(page, rotation));
-          if (score > best.score) best = { rotation, score };
+          const { score, text } = await scoreCanvas(worker, rotateCanvas(page, rotation));
+          if (score > best.score) best = { rotation, score, text };
         }
       }
-      result.push(best.score >= 25 ? rotateCanvas(page, best.rotation) : page);
+      const readable = best.score >= 25;
+      result.push({ canvas: readable ? rotateCanvas(page, best.rotation) : page, rotation: readable ? best.rotation : 0, score: best.score, readable, text: best.text });
     }
   } finally {
     await worker.setParameters({ tessedit_pageseg_mode: "3" });
   }
   return result;
+}
+
+/** Returns each page turned upright. Pages with no readable text are returned unchanged. */
+export async function orientPages(canvases: HTMLCanvasElement[], worker: OcrWorker, onProgress?: (message: string) => void): Promise<HTMLCanvasElement[]> {
+  return (await orientPagesDetailed(canvases, worker, onProgress)).map((page) => page.canvas);
 }

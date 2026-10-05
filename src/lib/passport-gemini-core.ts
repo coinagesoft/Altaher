@@ -212,3 +212,27 @@ export function askGeminiForOrientation(opts: {
 }): Promise<Record<string, unknown>> {
   return askGemini({ apiKey: opts.apiKey, models: opts.models, parts: buildParts(ORIENT_INSTRUCTION, opts.images), schema: ORIENT_SCHEMA, onProgress: opts.onProgress });
 }
+
+export const ADDRESS_INSTRUCTION = `You are given ONE scanned page: the back page of an Indian passport. Read ONLY the residential address.
+On this page the address is the block of printed lines directly under the label "Address" (Hindi + English), after the father/legal guardian, mother and spouse names, and before the "Old Passport No. with Date and Place of Issue" line. It usually has 2 to 4 lines and ends with a PIN code.
+Rules:
+- Copy the lines exactly as printed, joined into one line separated by single spaces or commas. Keep the PIN code (e.g. "PIN:396439,GUJARAT,INDIA").
+- Do NOT include the father, mother or spouse names, the old passport number, the file number or any label.
+- If the page is upside down or sideways, mentally rotate it first.
+- If there is no address on the page, return an empty string. Never guess.`;
+
+export const ADDRESS_SCHEMA = {
+  type: "OBJECT",
+  properties: { address: { type: "STRING" } },
+  required: ["address"],
+};
+
+/** Reads only the address from the (upright) back page. A tiny, focused request is far more reliable than the full extraction. */
+export function askGeminiForAddress(opts: {
+  apiKey: string;
+  models: string[];
+  images: string[];
+  onProgress?: ((message: string) => void) | undefined;
+}): Promise<Record<string, unknown>> {
+  return askGemini({ apiKey: opts.apiKey, models: opts.models, parts: buildParts(ADDRESS_INSTRUCTION, opts.images), schema: ADDRESS_SCHEMA, onProgress: opts.onProgress });
+}

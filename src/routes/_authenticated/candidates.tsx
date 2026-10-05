@@ -36,7 +36,7 @@ import {
   updateCandidateDetails,
 } from "@/lib/operations.functions";
 import { isAdminRole, STATUSES, formatDate, statusChangedAt, statusTone, useRefreshWorkspace, useWorkspace, type Candidate, type Role } from "@/lib/workspace";
-import { readPassportFile } from "@/lib/passport-ocr";
+import { readPassportFile, warmUpPassportReader } from "@/lib/passport-ocr";
 import { CategoryMultiSelect, TradeCategoryMultiSelect, hasAllCategories, joinCategories, parseCategories, useTradeOptions } from "@/components/trade-picker";
 
 export const Route = createFileRoute("/_authenticated/candidates")({
@@ -644,6 +644,10 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
   const [reading, setReading] = useState(false);
   const [readState, setReadState] = useState("");
   const [readTone, setReadTone] = useState<"info" | "ok" | "warn" | "error">("info");
+
+  useEffect(() => {
+    warmUpPassportReader();
+  }, []);
 
   async function readPassport() {
     const file = files["Passport"];
