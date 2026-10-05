@@ -1211,8 +1211,11 @@ export const readPassportDetails = createServerFn({ method: "POST" })
     const prompt =
       "Read this passport scan and return the details as JSON only, no commentary. Keys: surname, name (given names), dateOfBirth, placeOfBirth, address, passportNumber, passportIssueDate, passportExpiry, passportPlaceOfIssue. All dates in YYYY-MM-DD. Use an empty string for anything you cannot read confidently.";
     const clean = (value?: string) => (value ?? "").trim().replace(/^["']|["']$/g, "").trim();
+    const viteEnv = ((import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}) as Record<string, string | undefined>;
     const lovableKey = clean(process.env["LOVABLE_API_KEY"]);
-    const geminiKey = clean(process.env["GEMINI_API_KEY"] || process.env["VITE_GEMINI_API_KEY"]);
+    const geminiKey = clean(
+      process.env["GEMINI_API_KEY"] || process.env["VITE_GEMINI_API_KEY"] || viteEnv["GEMINI_API_KEY"] || viteEnv["VITE_GEMINI_API_KEY"],
+    );
     const failMessage = "The passport copy could not be read. Please fill the details by hand.";
 
     let text = "";
@@ -1231,7 +1234,7 @@ export const readPassportDetails = createServerFn({ method: "POST" })
       text = String(payload?.choices?.[0]?.message?.content ?? "");
     } else {
       // Self-hosted: same prompt and same model (gemini-2.5-flash), sent straight to Google's Gemini API.
-      if (!geminiKey) throw new Error("GEMINI_API_KEY is not set on the server (.env). Please fill the details by hand.");
+      if (!geminiKey) throw new Error("GEMINI_API_KEY is not set on the server environment. Please fill the details by hand.");
       const dataMatch = /^data:([^;,]+);base64,(.+)$/s.exec(data.dataUrl);
       if (!dataMatch) throw new Error(failMessage);
       const model = clean(process.env["PASSPORT_GEMINI_MODEL"]) || "gemini-2.5-flash";
