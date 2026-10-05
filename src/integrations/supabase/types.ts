@@ -1195,6 +1195,7 @@ export type Database = {
         | "R&R"
         | "EOC"
         | "Unavailable"
+        | "Blacklisted"
       document_category: "candidate" | "project"
       requirement_stage:
         | "Assigned"
@@ -1355,6 +1356,7 @@ export const Constants = {
         "R&R",
         "EOC",
         "Unavailable",
+        "Blacklisted",
       ],
       document_category: ["candidate", "project"],
       requirement_stage: [

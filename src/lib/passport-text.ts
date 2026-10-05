@@ -174,7 +174,6 @@ export function extractPassportFromOcr(pageTexts: string[]): PassportDetails {
     if (placeOfIssue) notes.push("Place of issue is a best guess - please confirm.");
   }
 
-  const placeOfBirth = snapPhrase(upperWords(lineAfter(lines, /place\s+of\s+birth/i))).replace(/\s+/g, " ");
 
   // ---- 7. address from the back page ----
   const STATES = ["GUJARAT", "MAHARASHTRA", "RAJASTHAN", "KARNATAKA", "KERALA", "PUNJAB", "HARYANA", "JHARKHAND", "BIHAR", "ODISHA", "TELANGANA", "UTTARAKHAND", "CHHATTISGARH", "ASSAM", "TAMIL NADU", "WEST BENGAL", "MADHYA PRADESH", "UTTAR PRADESH", "ANDHRA PRADESH", "DELHI", "GOA", "INDIA"];
@@ -183,13 +182,23 @@ export function extractPassportFromOcr(pageTexts: string[]): PassportDetails {
     const state = STATES.find((st) => !st.includes(" ") && editDistanceAtMost1(st, tok));
     return state ?? tok;
   };
+  let placeOfBirth = upperWords(lineAfter(lines, /place\s+of\s+b[a-z]{2,4}/i)).replace(/\s+/g, " ");
+  if (!placeOfBirth) {
+    // the label was misread: the place is the first plain line printed after the date-of-birth / sex line
+    const dobIdx = lines.findIndex((l) => /\b\d{2}\s?[\/.]\s?\d{2}\s?[\/.]\s?\d{4}\b/.test(l) && /\b[MF]\b/.test(l));
+    if (dobIdx >= 0) {
+      const candidate = lines.slice(dobIdx + 1, dobIdx + 4).find((l) => !l.includes("/") && /[A-Z]{4,}/.test(l.toUpperCase()));
+      if (candidate) placeOfBirth = upperWords(candidate).replace(/\s+/g, " ");
+    }
+  }
+  placeOfBirth = placeOfBirth.replace(/[A-Z]{5,}/g, fixToken);
   let address = "";
   const pinIdx = lines.findIndex((l) => /PIN\s*[:;]?\s*\d{6}/i.test(l));
   if (pinIdx >= 0) {
     const picked: string[] = [];
     for (let i = pinIdx; i >= 0 && picked.length < 4; i--) {
       let l = lines[i]!;
-      if (i !== pinIdx && /name\s+of|addr|add[a-z]{1,4}s{1,2}\b|spouse|mother|father|guardian/i.test(l)) break;
+      if (i !== pinIdx && /name\s+of|addr|add\W?\w{0,3}ss\b|spouse|mother|father|guardian/i.test(l)) break;
       if (i === pinIdx) l = l.replace(/(INDIA).*$/i, "$1"); // cut OCR junk after the PIN line
       let cleaned = l.toUpperCase().replace(/[^A-Z0-9,.:\-= ]/g, " ").replace(/=/g, "-").replace(/\s{2,}/g, " ").trim();
       if (i !== pinIdx) cleaned = cleaned.replace(/(\s+[A-Z]{1,3})+$/, (m) => (/^\s+(NR|RD|ST)$/.test(m) ? m : "")).trim();

@@ -5,7 +5,7 @@ import { getWorkspaceData } from "@/lib/operations.functions";
 export const ROLES = ["Data Entry", "Recruiter", "Project Coordinator", "Mobilisation Executive", "Admin", "Super Admin"] as const;
 export type Role = (typeof ROLES)[number];
 
-export const STATUSES = ["Available", "Unavailable", "Assigned", "Shortlisted", "Interview", "Practical Test", "Passed", "Selected", "Rejected", "Medical", "Visa", "Mobilisation", "On Site", "R&R", "EOC"] as const;
+export const STATUSES = ["Available", "Unavailable", "Blacklisted", "Assigned", "Shortlisted", "Interview", "Practical Test", "Passed", "Selected", "Rejected", "Medical", "Visa", "Mobilisation", "On Site", "R&R", "EOC"] as const;
 export type Status = (typeof STATUSES)[number];
 
 export const MOBILISATION_STAGES = ["Medical", "Visa", "Mobilisation"] as const;
@@ -50,6 +50,7 @@ export function statusTone(status: string) {
   if (status === "Available") return "bg-emerald-500/10 text-emerald-600 border-emerald-500/20";
   if (status === "Rejected" || status === "EOC") return "bg-destructive/10 text-destructive border-destructive/20";
   if (status === "Unavailable") return "bg-destructive/10 text-destructive border-destructive/20";
+  if (status === "Blacklisted") return "bg-destructive/15 text-destructive border-destructive/30 font-semibold";
   if (status === "On Site") return "bg-primary/10 text-primary border-primary/20";
   if (status === "R&R") return "bg-amber-500/10 text-amber-600 border-amber-500/20";
   return "bg-muted text-muted-foreground border-border";

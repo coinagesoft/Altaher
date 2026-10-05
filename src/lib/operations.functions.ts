@@ -4,7 +4,7 @@ import JSZip from "jszip";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 const roles = ["Data Entry", "Recruiter", "Project Coordinator", "Mobilisation Executive", "Admin", "Super Admin"] as const;
-const statuses = ["Available", "Unavailable", "Assigned", "Shortlisted", "Interview", "Practical Test", "Passed", "Selected", "Rejected", "Medical", "Visa", "Mobilisation", "On Site", "R&R", "EOC"] as const;
+const statuses = ["Available", "Unavailable", "Blacklisted", "Assigned", "Shortlisted", "Interview", "Practical Test", "Passed", "Selected", "Rejected", "Medical", "Visa", "Mobilisation", "On Site", "R&R", "EOC"] as const;
 const requirementStages = ["Assigned", "Shortlisted", "Interview", "Selected", "Medical", "Visa", "Mobilisation"] as const;
 
 const candidateInput = z.object({
@@ -650,6 +650,24 @@ export const setCandidateUnavailable = createServerFn({ method: "POST" })
     const { data: updated, error } = await supabaseAdmin.from("candidates").update({ status: next, current_project_id: null }).eq("id", data.candidateId).select().single();
     if (error) throw new Error(error.message);
     await supabaseAdmin.from("audit_events").insert({ candidate_id: data.candidateId, action: data.unavailable ? "Candidate marked Unavailable" : "Candidate returned to Available", actor_id: context.userId, previous_status: candidate.status, new_status: next });
+    return updated;
+  });
+
+export const setCandidateBlacklisted = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => z.object({ candidateId: z.string().uuid(), blacklisted: z.boolean() }).parse(input))
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Data Entry", "Recruiter", "Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: candidate, error: readError } = await supabaseAdmin.from("candidates").select("status,current_project_id").eq("id", data.candidateId).single();
+    if (readError || !candidate) throw new Error("Candidate not found");
+    if (candidate.current_project_id) throw new Error("Candidate is on one of our projects. Close that assignment first.");
+    if (data.blacklisted && candidate.status === "Blacklisted") throw new Error("Candidate is already blacklisted");
+    if (!data.blacklisted && candidate.status !== "Blacklisted") throw new Error("Candidate is not blacklisted");
+    const next = data.blacklisted ? "Blacklisted" : "Available";
+    const { data: updated, error } = await supabaseAdmin.from("candidates").update({ status: next, current_project_id: null }).eq("id", data.candidateId).select().single();
+    if (error) throw new Error(error.message);
+    await supabaseAdmin.from("audit_events").insert({ candidate_id: data.candidateId, action: data.blacklisted ? "Candidate blacklisted" : "Candidate removed from blacklist", actor_id: context.userId, previous_status: candidate.status, new_status: next });
     return updated;
   });
 

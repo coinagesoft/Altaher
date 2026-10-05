@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, ArrowDown, ArrowUp, Check, CheckCircle2, ChevronLeft, ChevronRight, Download, FileSpreadsheet, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Ban, Check, CheckCircle2, ChevronLeft, ChevronRight, Download, FileSpreadsheet, Loader2, Plus, Search, Trash2, Upload, X } from "lucide-react";
 import * as XLSX from "xlsx";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -29,6 +29,7 @@ import {
   getCandidatePhotoLink,
   markCandidateAvailable,
   setCandidateUnavailable,
+  setCandidateBlacklisted,
   setCandidatePhoto,
   recordCandidateDocument,
   resolveDocumentType,
@@ -73,6 +74,7 @@ function CandidatesPage() {
   const workspace = useWorkspace();
   const refresh = useRefreshWorkspace();
   const setUnavailable = useServerFn(setCandidateUnavailable);
+  const setBlacklisted = useServerFn(setCandidateBlacklisted);
   const executeBulkUpsert = useServerFn(bulkUpsertCandidates);
 
   const [query, setQuery] = useState("");
@@ -154,6 +156,17 @@ function CandidatesPage() {
   const toggleStatus = useMutation({
     mutationFn: async ({ candidateId, unavailable }: { candidateId: string; unavailable: boolean }) => {
       await setUnavailable({ data: { candidateId, unavailable } });
+    },
+    onSuccess: () => {
+      setRowError(null);
+      refresh();
+    },
+    onError: (error: Error) => setRowError(error.message),
+  });
+
+  const toggleBlacklist = useMutation({
+    mutationFn: async ({ candidateId, blacklisted }: { candidateId: string; blacklisted: boolean }) => {
+      await setBlacklisted({ data: { candidateId, blacklisted } });
     },
     onSuccess: () => {
       setRowError(null);
@@ -245,7 +258,7 @@ function CandidatesPage() {
           <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All statuses</SelectItem>
-            {STATUSES.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}
+            {STATUSES.map((item) => <SelectItem key={item} value={item}>{item === "Blacklisted" ? "BLACKLISTED" : item}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={trade} onValueChange={(value) => { setTrade(value); setCategories([]); }}>
@@ -323,22 +336,91 @@ function CandidatesPage() {
                 <td className="px-4 py-3 text-muted-foreground">{formatDate(candidate.passport_expiry)}</td>
                 <td className="px-4 py-3">{Number(candidate.rating).toFixed(1)}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className={statusTone(candidate.status)}>{candidate.status}</Badge>
-                    {(role === "Data Entry" || role === "Recruiter" || isAdminRole(role)) && !candidate.current_project_id && (candidate.status === "Available" || candidate.status === "Unavailable") ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-6"
-                        disabled={toggleStatus.isPending}
-                        aria-label={candidate.status === "Available" ? "Mark unavailable" : "Mark available"}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleStatus.mutate({ candidateId: candidate.id, unavailable: candidate.status === "Available" });
-                        }}
-                      >
-                        {candidate.status === "Available" ? <X className="size-3.5 text-destructive" /> : <Check className="size-3.5 text-emerald-600" />}
-                      </Button>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline" className={statusTone(candidate.status)}>
+                      {candidate.status === "Blacklisted" ? "BLACKLISTED" : candidate.status}
+                    </Badge>
+                    {(role === "Data Entry" || role === "Recruiter" || isAdminRole(role)) && !candidate.current_project_id ? (
+                      <div className="flex items-center gap-0.5">
+                        {candidate.status === "Available" ? (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-6 text-destructive hover:bg-destructive/10"
+                              disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                              aria-label="Mark unavailable"
+                              title="Mark unavailable"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleStatus.mutate({ candidateId: candidate.id, unavailable: true });
+                              }}
+                            >
+                              <X className="size-3.5 text-destructive" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-6 text-destructive hover:bg-destructive/10"
+                              disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                              aria-label="Blacklist candidate"
+                              title="Blacklist candidate"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: true });
+                              }}
+                            >
+                              <Ban className="size-3.5 text-destructive" />
+                            </Button>
+                          </>
+                        ) : candidate.status === "Unavailable" ? (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-6 text-emerald-600 hover:bg-emerald-500/10"
+                              disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                              aria-label="Mark available"
+                              title="Mark available"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleStatus.mutate({ candidateId: candidate.id, unavailable: false });
+                              }}
+                            >
+                              <Check className="size-3.5 text-emerald-600" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="size-6 text-destructive hover:bg-destructive/10"
+                              disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                              aria-label="Blacklist candidate"
+                              title="Blacklist candidate"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: true });
+                              }}
+                            >
+                              <Ban className="size-3.5 text-destructive" />
+                            </Button>
+                          </>
+                        ) : candidate.status === "Blacklisted" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-6 text-emerald-600 hover:bg-emerald-500/10"
+                            disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                            aria-label="Remove from blacklist"
+                            title="Remove from blacklist (return to Available)"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: false });
+                            }}
+                          >
+                            <Check className="size-3.5 text-emerald-600" />
+                          </Button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                   <span className="mt-1 block text-[11px] italic leading-tight text-muted-foreground">
@@ -568,7 +650,7 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
     if (!file) return;
     setReading(true);
     setReadTone("info");
-    setReadState("Reading the passport copy on this device...");
+    setReadState("Reading the passport copy...");
     try {
       const details = await readPassportFile(file, (message) => setReadState(message));
       setForm((current) => ({
@@ -585,9 +667,9 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
       }));
       const verified = details.mrzVerified
         ? "Passport no., date of birth and expiry were verified against the machine-readable lines."
-        : "The machine-readable lines could not be verified - check every field carefully.";
-      setReadTone(details.mrzVerified && details.notes.length === 0 ? "ok" : "warn");
-      setReadState(`Filled in from the passport copy. ${verified} ${details.notes.join(" ")}`.trim());
+        : "Read by Gemini AI. The machine-readable lines could not be verified - check every field carefully.";
+      setReadTone(details.mrzVerified && details.notes.length === 0 && !details.engineNote ? "ok" : "warn");
+      setReadState(`Filled in from the passport copy. ${verified} ${details.engineNote} ${details.notes.join(" ")}`.replace(/\s+/g, " ").trim());
     } catch (readError) {
       setReadTone("error");
       setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read. Please fill the details by hand.");
@@ -822,6 +904,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
   const assign = useServerFn(assignCandidateToProject);
   const markAvailable = useServerFn(markCandidateAvailable);
   const setUnavailable = useServerFn(setCandidateUnavailable);
+  const setBlacklisted = useServerFn(setCandidateBlacklisted);
   const resolveType = useServerFn(resolveDocumentType);
   const recordDocument = useServerFn(recordCandidateDocument);
 
@@ -869,7 +952,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
   if (editing) return <CandidateForm role={role} candidate={candidate} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />;
 
   return (
-    <Panel title={candidate.name} subtitle={`${candidate.candidate_number} · ${candidate.status}`} onClose={onClose}>
+    <Panel title={candidate.name} subtitle={`${candidate.candidate_number} · ${candidate.status === "Blacklisted" ? "BLACKLISTED" : candidate.status}`} onClose={onClose}>
       <CandidatePhoto candidate={candidate} canEdit={canEdit} />
       <div className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
         <Detail label="Surname" value={candidate.surname ?? "—"} />
@@ -975,7 +1058,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
       </section>
 
       <div className="flex flex-wrap gap-2">
-        {canEdit && candidate.status !== "Available" && candidate.status !== "Unavailable" && !candidate.current_project_id ? (
+        {canEdit && candidate.status !== "Available" && candidate.status !== "Unavailable" && candidate.status !== "Blacklisted" && !candidate.current_project_id ? (
           <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => markAvailable({ data: { candidateId: candidate.id } }), "Candidate is now Available.")}>
             <Upload className="size-4" /> Mark Available
           </Button>
@@ -992,10 +1075,26 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
             Mark Available again
           </Button>
         ) : null}
+
+        {canToggleAvailability && candidate.status === "Blacklisted" ? (
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => setBlacklisted({ data: { candidateId: candidate.id, blacklisted: false } }), "Candidate removed from blacklist.")}>
+            <Check className="size-4 mr-1 text-emerald-600" /> Remove from Blacklist
+          </Button>
+        ) : null}
+
+        {canToggleAvailability && candidate.status !== "Blacklisted" && !candidate.current_project_id ? (
+          <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10" disabled={busy} onClick={() => void run(() => setBlacklisted({ data: { candidateId: candidate.id, blacklisted: true } }), "Candidate has been blacklisted.")}>
+            <Ban className="size-4 mr-1 text-destructive" /> Blacklist Candidate
+          </Button>
+        ) : null}
       </div>
 
       {candidate.status === "Unavailable" ? (
         <p className="text-xs text-muted-foreground">Working with another company — cannot be assigned to a project until marked Available again.</p>
+      ) : null}
+
+      {candidate.status === "Blacklisted" ? (
+        <p className="text-xs text-destructive font-medium">Candidate is blacklisted — cannot be assigned to any project until removed from the blacklist.</p>
       ) : null}
 
       {canAssign ? (
