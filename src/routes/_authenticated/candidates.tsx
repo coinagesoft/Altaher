@@ -37,6 +37,7 @@ import {
   updateCandidateDetails,
 } from "@/lib/operations.functions";
 import { isAdminRole, STATUSES, formatDate, statusChangedAt, statusTone, useRefreshWorkspace, useWorkspace, type Candidate, type Role } from "@/lib/workspace";
+import { assertFileSize, sizeProblem } from "@/lib/upload-limits";
 import { CategoryMultiSelect, TradeCategoryMultiSelect, hasAllCategories, joinCategories, parseCategories, useTradeOptions } from "@/components/trade-picker";
 
 export const Route = createFileRoute("/_authenticated/candidates")({
@@ -652,6 +653,11 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
   async function readPassport() {
     const file = files["Passport"];
     if (!file) return;
+    const tooBig = sizeProblem("Passport", file);
+    if (tooBig) {
+      setReadState(tooBig);
+      return;
+    }
     setReading(true);
     setReadState("");
     try {
@@ -749,6 +755,10 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
         passportPlaceOfIssue: form.passportPlaceOfIssue.trim(),
       };
       if (candidate) return update({ data: { ...payload, candidateId: candidate.id } });
+      for (const label of INITIAL_DOCS) {
+        const attached = files[label];
+        if (attached) assertFileSize(label, attached);
+      }
       const created = await create({ data: { ...payload, confirmedDifferentFrom: confirmedDifferent } });
       if (form.remark.trim()) await remarkFn({ data: { candidateId: created.id, text: form.remark.trim() } });
       for (const label of INITIAL_DOCS) {
@@ -788,6 +798,13 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
                 accept="image/*,application/pdf"
                 onChange={(event) => {
                   const file = event.target.files?.[0] ?? null;
+                  const tooBig = file ? sizeProblem("Passport", file) : "";
+                  if (tooBig) {
+                    event.target.value = "";
+                    setFiles((current) => ({ ...current, Passport: null }));
+                    setReadState(tooBig);
+                    return;
+                  }
                   setFiles((current) => ({ ...current, Passport: file }));
                   setReadState("");
                 }}
@@ -868,7 +885,18 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
             <Field key={label} label={label}>
               <Input
                 type="file"
-                onChange={(event) => setFiles((current) => ({ ...current, [label]: event.target.files?.[0] ?? null }))}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  const tooBig = file ? sizeProblem(label, file) : "";
+                  if (tooBig) {
+                    event.target.value = "";
+                    setFiles((current) => ({ ...current, [label]: null }));
+                    setError(tooBig);
+                    return;
+                  }
+                  setError("");
+                  setFiles((current) => ({ ...current, [label]: file }));
+                }}
               />
             </Field>
           ))}
@@ -946,6 +974,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
   }
 
   async function upload(file: File) {
+    assertFileSize(docType, file);
     const path = `${candidate.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
     const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
     if (uploaded.error) throw new Error(uploaded.error.message);
@@ -1244,6 +1273,7 @@ function CandidatePhoto({ candidate, canEdit }: { candidate: Candidate; canEdit:
   }
 
   async function upload(file: File) {
+    assertFileSize("Photo", file);
     const path = `${candidate.id}/photo-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
     const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
     if (uploaded.error) throw new Error(uploaded.error.message);

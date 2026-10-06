@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import JSZip from "jszip";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { formatBytes, maxBytesForDocument } from "@/lib/upload-limits";
 
 const roles = ["Data Entry", "Recruiter", "Project Coordinator", "Mobilisation Executive", "Admin", "Super Admin"] as const;
 const statuses = ["Available", "Unavailable", "Blacklisted", "Assigned", "Shortlisted", "Interview", "Practical Test", "Passed", "Selected", "Rejected", "Medical", "Visa", "Mobilisation", "On Site", "R&R", "EOC"] as const;
@@ -511,6 +512,21 @@ export const recordCandidateDocument = createServerFn({ method: "POST" })
     await requireRole(context, ["Data Entry", "Recruiter", "Project Coordinator", "Mobilisation Executive", "Admin"]);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     if (!data.storagePath.startsWith(`${data.candidateId}/`)) throw new Error("Invalid document path");
+    // Enforce size limits on the server too: Passport 1 MB, CV 10 MB, everything else 3 MB.
+    {
+      const { data: docType } = await supabaseAdmin.from("document_types").select("name").eq("id", data.documentTypeId).maybeSingle();
+      const slash = data.storagePath.lastIndexOf("/");
+      const folder = data.storagePath.slice(0, slash);
+      const objectName = data.storagePath.slice(slash + 1);
+      const listed = await supabaseAdmin.storage.from("candidate-documents").list(folder, { search: objectName, limit: 100 });
+      const stored = (listed.data ?? []).find((item: { name: string }) => item.name === objectName) as { metadata?: { size?: number } | null } | undefined;
+      const size = Number(stored?.metadata?.size ?? 0);
+      const limit = maxBytesForDocument(docType?.name ?? "");
+      if (size > limit) {
+        await supabaseAdmin.storage.from("candidate-documents").remove([data.storagePath]);
+        throw new Error(`${docType?.name ?? "Document"} "${data.fileName}" is ${formatBytes(size)} - the maximum allowed size is ${formatBytes(limit)}. Please upload a smaller file.`);
+      }
+    }
     const { data: document, error } = await supabaseAdmin.from("candidate_documents").insert({ candidate_id: data.candidateId, project_id: data.projectId ?? null, document_type_id: data.documentTypeId, file_name: data.fileName, storage_path: data.storagePath, expiry_date: data.expiryDate || null, uploaded_by: context.userId }).select().single();
     if (error) throw new Error(error.message);
     await supabaseAdmin.from("audit_events").insert({ candidate_id: data.candidateId, project_id: data.projectId ?? null, action: "Document uploaded", actor_id: context.userId, details: { document_id: document.id, file_name: data.fileName } });
@@ -1239,7 +1255,7 @@ export const extractCandidatePhoto = createServerFn({ method: "POST" })
 
 export const readPassportDetails = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input) => z.object({ dataUrl: z.string().min(50) }).parse(input))
+  .inputValidator((input) => z.object({ dataUrl: z.string().min(50).max(Math.ceil((1024 * 1024 * 4) / 3) + 200, "The passport copy must be 1 MB or smaller.") }).parse(input))
   .handler(async ({ data, context }) => {
     await requireRole(context, ["Data Entry", "Recruiter", "Admin"]);
     const prompt =

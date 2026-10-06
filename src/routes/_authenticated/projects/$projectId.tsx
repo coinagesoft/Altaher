@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { supabase } from "@/integrations/supabase/client";
+import { assertFileSize } from "@/lib/upload-limits";
 import {
   cancelProject,
   changeCandidateStage,
@@ -252,6 +253,7 @@ function SelectionCard({ projectId, stage, candidate, onMove, onOpen }: { projec
     setBusy(true);
     setError("");
     try {
+      assertFileSize("Practical Test Report", file);
       const path = `${row.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
       if (uploaded.error) throw new Error(uploaded.error.message);
@@ -481,6 +483,7 @@ function OnSiteRow({ projectId, role, candidate, onMove, onOpen }: { projectId: 
     setClearBusy(documentName);
     setError("");
     try {
+      assertFileSize(documentName, file);
       const path = `${row.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
       if (uploaded.error) throw new Error(uploaded.error.message);
@@ -513,6 +516,7 @@ function OnSiteRow({ projectId, role, candidate, onMove, onOpen }: { projectId: 
     setBusy(true);
     setError("");
     try {
+      assertFileSize("Contract", file);
       const path = `${row.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
       if (uploaded.error) throw new Error(uploaded.error.message);
@@ -791,6 +795,7 @@ function MobilisationCard({ projectId, projectStart, role, candidate, onMove, on
     setBusy(documentName);
     setError("");
     try {
+      assertFileSize(documentName, file);
       const path = `${row.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
       if (uploaded.error) throw new Error(uploaded.error.message);
@@ -1671,6 +1676,7 @@ function CandidateDocumentsRow({ projectId, candidate, stage, documents }: { pro
     setBusy(true);
     setError("");
     try {
+      assertFileSize(documentName, file);
       const path = `${row.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_")}`;
       const uploaded = await supabase.storage.from("candidate-documents").upload(path, file);
       if (uploaded.error) throw new Error(uploaded.error.message);
