@@ -680,7 +680,7 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
         passportExpiry: details.passportExpiry || current.passportExpiry,
         passportPlaceOfIssue: details.passportPlaceOfIssue || current.passportPlaceOfIssue,
       }));
-      setReadState("Filled in from the passport copy — please check and edit anything that looks wrong.");
+      setReadState("Filled in from the passport copy — please check the details.");
     } catch (readError) {
       setReadState(readError instanceof Error ? readError.message : "The passport copy could not be read.");
     } finally {
@@ -819,7 +819,7 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
               {reading ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />} Read details
             </Button>
           </div>
-          {readState ? <p className={`mt-2 text-xs ${readState.startsWith("Filled") ? "text-emerald-600" : "text-destructive"}`}>{readState}</p> : null}
+          {readState ? <p title={readState} className="mt-2 truncate whitespace-nowrap text-xs text-emerald-600">{readState}</p> : null}
         </section>
       ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
