@@ -87,13 +87,11 @@ export const checkSimilarCandidate = createServerFn({ method: "POST" })
   });
 
 async function nextCandidateNumber(supabaseAdmin: any) {
-  const { data: rows } = await supabaseAdmin.from("candidates").select("candidate_number");
-  let max = 0;
-  for (const row of rows ?? []) {
-    const match = /^C-(\d+)$/i.exec(String(row.candidate_number ?? ""));
-    if (match) max = Math.max(max, Number(match[1]));
-  }
-  return `C-${String(max + 1).padStart(4, "0")}`;
+  // PostgreSQL sequence allocation is atomic, so concurrent candidate saves
+  // cannot receive the same automatically generated number.
+  const { data, error } = await supabaseAdmin.rpc("next_candidate_number");
+  if (error) throw new Error(`Candidate number could not be generated: ${error.message}`);
+  return String(data);
 }
 
 function candidateValues(data: z.infer<typeof candidateInput>) {
@@ -180,7 +178,7 @@ export const getWorkspaceData = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const role = await requireRole(context, roles);
     const [candidates, projects, remarks, documents, documentTypes, requirements, tradeRequirements, travel, clearances, assignments, history, audit, trades, tradeCategories, employeeNumbers] = await Promise.all([
-      context.supabase.from("candidates").select("id,candidate_number,employee_number,surname,name,date_of_birth,place_of_birth,address,email,phone,contact_no_2,reference,bank_account_holder,bank_account_number,bank_name,bank_branch,bank_ifsc,bank_swift,candidate_kind,trade,category,skills,experience_years,rating,interview_rating,practical_rating,status,current_project_id,passport_number,passport_issue_date,passport_expiry,passport_place_of_issue,photo_path,photo_source,rr_start_date,rr_days,created_at,updated_at").order("name"),
+      context.supabase.from("candidates").select("id,candidate_number,employee_number,surname,name,date_of_birth,place_of_birth,address,email,phone,contact_no_2,reference,bank_account_holder,bank_account_number,bank_name,bank_branch,bank_ifsc,bank_swift,candidate_kind,trade,category,skills,experience_years,rating,interview_rating,practical_rating,status,current_project_id,passport_number,passport_issue_date,passport_expiry,passport_place_of_issue,photo_path,photo_source,rr_start_date,rr_days,created_at,updated_at").order("created_at", { ascending: false }),
       context.supabase.from("projects").select("id,name,client,country,start_date,required_headcount,cancelled_at,cancel_reason").order("start_date"),
       context.supabase.from("candidate_remarks").select("id,candidate_id,author_id,text,created_at").order("created_at", { ascending: false }),
       context.supabase.from("candidate_documents").select("id,candidate_id,project_id,document_type_id,file_name,expiry_date,uploaded_by,created_at"),
@@ -212,9 +210,45 @@ export const addCandidate = createServerFn({ method: "POST" })
     const lookAlikes = await findLookAlikes(supabaseAdmin, data);
     const unconfirmed = lookAlikes.filter((match: { id: string }) => !confirmedDifferentFrom.includes(match.id));
     if (unconfirmed.length) throw new Error(`Possible duplicate: ${unconfirmed[0].name} (${unconfirmed[0].candidateNumber}) has the same name, surname, date of birth and address. Check them first, then confirm this is a different person.`);
-    const candidateNumber = data.candidateNumber?.trim() ? data.candidateNumber.trim() : await nextCandidateNumber(supabaseAdmin);
-    const { data: candidate, error } = await supabaseAdmin.from("candidates").insert({ ...candidateValues(data), candidate_number: candidateNumber, status: "Available", created_by: context.userId, duplicate_checked_of: lookAlikes[0]?.id ?? null }).select().single();
-    if (error) throw new Error(error.message);
+    const manuallyEnteredCandidateNumber = Boolean(data.candidateNumber?.trim());
+    let candidateNumber = manuallyEnteredCandidateNumber
+      ? data.candidateNumber!.trim()
+      : await nextCandidateNumber(supabaseAdmin);
+
+    let { data: candidate, error } = await supabaseAdmin
+      .from("candidates")
+      .insert({ ...candidateValues(data), candidate_number: candidateNumber, status: "Available", created_by: context.userId, duplicate_checked_of: lookAlikes[0]?.id ?? null })
+      .select()
+      .single();
+
+    // A generated number normally cannot conflict because it comes from the
+    // database sequence. Keep one defensive retry for records created by an
+    // older version of the application or manual database changes.
+    if (error?.code === "23505" && String(error.message ?? "").includes("candidates_candidate_number_key") && !manuallyEnteredCandidateNumber) {
+      candidateNumber = await nextCandidateNumber(supabaseAdmin);
+      const retry = await supabaseAdmin
+        .from("candidates")
+        .insert({ ...candidateValues(data), candidate_number: candidateNumber, status: "Available", created_by: context.userId, duplicate_checked_of: lookAlikes[0]?.id ?? null })
+        .select()
+        .single();
+      candidate = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      if (error.code === "23505" && String(error.message ?? "").includes("candidates_candidate_number_key") && manuallyEnteredCandidateNumber) {
+        throw new Error(`Candidate number ${candidateNumber} already exists. Please use a different candidate number.`);
+      }
+      throw new Error(error.message);
+    }
+
+    // Supabase's insert().single() can still expose a nullable data type even
+    // after the error check. Guard it explicitly so TypeScript knows that the
+    // inserted candidate exists before we use candidate.id below.
+    if (!candidate) {
+      throw new Error("Candidate was created, but the saved candidate could not be returned.");
+    }
+
     await ensureTradeOption(supabaseAdmin, context.userId, data.trade, data.category);
     await supabaseAdmin.from("audit_events").insert({ candidate_id: candidate.id, action: "Candidate created", actor_id: context.userId, new_status: "Available", details: lookAlikes.length ? { candidate_number: candidateNumber, confirmed_different_from: lookAlikes.map((match: { candidateNumber: string }) => match.candidateNumber) } : { candidate_number: candidateNumber } });
     return candidate;

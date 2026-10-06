@@ -16,13 +16,26 @@ export type Project = Workspace["projects"][number];
 
 export function useWorkspace() {
   const fetchWorkspace = useServerFn(getWorkspaceData);
-  return useQuery({ queryKey: ["workspace"], queryFn: () => fetchWorkspace({}) });
+  return useQuery({
+    queryKey: ["workspace"],
+    queryFn: () => fetchWorkspace({}),
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
 }
 
 export function useRefreshWorkspace() {
   const queryClient = useQueryClient();
-  return () => {
-    void queryClient.invalidateQueries({ queryKey: ["workspace"] });
+
+  return async () => {
+    await queryClient.invalidateQueries({
+      queryKey: ["workspace"],
+    });
+
+    await queryClient.refetchQueries({
+      queryKey: ["workspace"],
+      type: "active",
+    });
   };
 }
 

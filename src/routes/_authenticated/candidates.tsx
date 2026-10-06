@@ -84,7 +84,7 @@ function CandidatesPage() {
   const [minRating, setMinRating] = useState("0");
   const [maxRating, setMaxRating] = useState("10");
   const [availableOnly, setAvailableOnly] = useState(false);
-  const [sortBy, setSortBy] = useState<"name" | "rating" | "trade">("name");
+  const [sortBy, setSortBy] = useState<"newest" | "name" | "rating" | "trade">("newest");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -207,6 +207,9 @@ function CandidatesPage() {
     });
     const direction = sortDir === "asc" ? 1 : -1;
     return [...rows].sort((a, b) => {
+      if (sortBy === "newest") {
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
       if (sortBy === "rating") return (Number(a.rating) - Number(b.rating)) * direction;
       if (sortBy === "trade") return (`${a.trade ?? ""} ${a.category ?? ""}`).localeCompare(`${b.trade ?? ""} ${b.category ?? ""}`) * direction;
       return `${a.surname ?? ""} ${a.name}`.localeCompare(`${b.surname ?? ""} ${b.name}`) * direction;
@@ -279,9 +282,10 @@ function CandidatesPage() {
           Available only
         </label>
         <div className="flex items-center gap-2 md:col-span-2">
-          <Select value={sortBy} onValueChange={(value) => setSortBy(value as "name" | "rating" | "trade")}>
+          <Select value={sortBy} onValueChange={(value) => setSortBy(value as "newest" | "name" | "rating" | "trade")}>
             <SelectTrigger><SelectValue placeholder="Sort by" /></SelectTrigger>
             <SelectContent>
+              <SelectItem value="newest">Recently added</SelectItem>
               <SelectItem value="name">Sort by name</SelectItem>
               <SelectItem value="rating">Sort by rating</SelectItem>
               <SelectItem value="trade">Sort by trade</SelectItem>
@@ -576,7 +580,7 @@ function CandidatesPage() {
         </DialogContent>
       </Dialog>
 
-      {creating ? <CandidateForm role={role} onClose={() => setCreating(false)} onSaved={() => { setCreating(false); refresh(); }} /> : null}
+      {creating ? <CandidateForm role={role} onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await refresh(); }} /> : null}
       {selected ? <CandidateDetail key={selected.id} candidate={selected} role={role} onClose={() => setSelectedId(null)} /> : null}
     </AppShell>
   );
@@ -949,7 +953,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
     await recordDocument({ data: { candidateId: candidate.id, documentTypeId: type.id, fileName: file.name, storagePath: path, expiryDate: expiry || undefined } });
   }
 
-  if (editing) return <CandidateForm role={role} candidate={candidate} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(); }} />;
+  if (editing) return <CandidateForm role={role} candidate={candidate} onClose={() => setEditing(false)} onSaved={async () => { setEditing(false); await refresh(); }} />;
 
   return (
     <Panel title={candidate.name} subtitle={`${candidate.candidate_number} · ${candidate.status === "Blacklisted" ? "BLACKLISTED" : candidate.status}`} onClose={onClose}>
