@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronDown, Download, FileText, Loader2, Plane, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowRight, Check, ChevronDown, Download, FileText, Loader2, Pencil, Plane, Plus, Trash2 } from "lucide-react";
 
 import logoAsset from "@/assets/altaher-logo.png.asset.json";
 import { AppShell } from "@/components/app-shell";
 import { DocumentLink } from "@/components/document-link";
 import { CandidateDetail } from "@/routes/_authenticated/candidates";
+import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import { assertFileSize } from "@/lib/upload-limits";
 import {
   cancelProject,
   changeCandidateStage,
+  deleteProject,
   downloadCandidateDocumentsZip,
   downloadProjectDocumentsZip,
   recordCandidateDocument,
@@ -29,6 +31,7 @@ import {
   setMobilisationClearance,
   setProjectTradeRequirement,
   setTravelDetails,
+  updateProject,
 } from "@/lib/operations.functions";
 import { isAdminRole, MOBILISATION_STAGES, daysUntil, formatDate, monthsUntil, statusTone, useRefreshWorkspace, useWorkspace as useWorkspaceBase, type Role } from "@/lib/workspace";
 import { TradeCategorySelect, hasAllCategories, parseCategories } from "@/components/trade-picker";
@@ -146,7 +149,9 @@ function ProjectDetailPage() {
         <div className="flex flex-wrap items-center gap-2">
           {project?.cancelled_at ? <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/20">Cancelled</Badge> : null}
           <Badge variant="outline">{candidates.length} candidates in this project</Badge>
+          {(role === "Project Coordinator" || isAdminRole(role)) && project ? <EditProjectButton project={project} onDone={(text) => setMessage({ tone: "ok", text })} /> : null}
           {(role === "Project Coordinator" || isAdminRole(role)) && project && !project.cancelled_at ? <CancelProjectButton projectId={projectId} onDone={(text) => setMessage({ tone: "ok", text })} /> : null}
+          {isAdminRole(role) && project ? <DeleteProjectButton project={project} assignedCount={candidates.length} /> : null}
         </div>
       </div>
 
@@ -183,17 +188,33 @@ type CandidateRow = ReturnType<typeof useWorkspace>["data"] extends infer Data ?
 type StageExtra = { rrStartDate?: string; rrDays?: number; reason?: string; interviewRating?: number; practicalRating?: number; eocDate?: string };
 
 const REJECTION_REASONS = ["Did not attend", "Not suitable for the trade", "Failed the interview", "Salary expectations", "Backed out", "Client rejected"] as const;
-const CANCEL_REASONS = ["Backed Out", "Client Rejected", "Medically Unfit", "Police Clearance not obtained", "Visa rejected"] as const;
+const CANCEL_REASONS = ["Backed Out", "Client Rejected", "Medically Unfit", "Police Clearance not obtained", "Visa rejected", "Project completion", "Other"] as const;
 
 function ReasonPicker({ options, value, onChange }: { options: readonly string[]; value: string; onChange: (value: string) => void }) {
+  // "Other" is a prompt to type a custom reason, not a reason to store as-is.
+  const [otherChosen, setOtherChosen] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selected = otherChosen ? "Other" : options.includes(value) ? value : "";
   return (
     <div className="mt-2 space-y-2">
       <Label className="text-xs text-muted-foreground">Reason</Label>
-      <Select value={options.includes(value) ? value : ""} onValueChange={onChange}>
+      <Select
+        value={selected}
+        onValueChange={(next) => {
+          if (next === "Other") {
+            setOtherChosen(true);
+            onChange("");
+            setTimeout(() => inputRef.current?.focus(), 0);
+          } else {
+            setOtherChosen(false);
+            onChange(next);
+          }
+        }}
+      >
         <SelectTrigger className="h-9"><SelectValue placeholder="Choose a reason" /></SelectTrigger>
         <SelectContent>{options.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent>
       </Select>
-      <Input className="h-9" placeholder="Or type a reason" value={value} onChange={(event) => onChange(event.target.value)} />
+      <Input ref={inputRef} className="h-9" placeholder={otherChosen ? "Type the reason" : "Or type a reason"} value={value} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
@@ -1998,6 +2019,114 @@ function CancelProjectButton({ projectId, onDone }: { projectId: string; onDone:
       </div>
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
     </div>
+  );
+}
+
+function EditProjectButton({ project, onDone }: { project: { id: string; name: string; client: string; country: string; start_date: string }; onDone: (text: string) => void }) {
+  const update = useServerFn(updateProject);
+  const refresh = useRefreshWorkspace();
+  const toForm = () => ({ name: project.name, client: project.client, country: project.country, startDate: (project.start_date ?? "").slice(0, 10) });
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(toForm);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      await update({ data: { projectId: project.id, name: form.name.trim(), client: form.client.trim(), country: form.country.trim(), startDate: form.startDate } });
+      setOpen(false);
+      await refresh();
+      onDone("Project details updated.");
+    } catch (saveError) {
+      setError((saveError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => { setForm(toForm()); setError(""); setOpen(true); }}>
+        <Pencil className="size-4" /> Edit project
+      </Button>
+    );
+  }
+
+  const invalid = form.name.trim().length < 2 || form.client.trim().length < 2 || form.country.trim().length < 2 || !form.startDate;
+  return (
+    <div className="w-full rounded-md border border-border bg-card p-3">
+      <p className="text-sm font-medium">Edit project</p>
+      <div className="mt-2 grid gap-3 md:grid-cols-4">
+        <div><Label className="text-xs text-muted-foreground">Project name</Label><Input className="mt-1.5" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></div>
+        <div><Label className="text-xs text-muted-foreground">Client name</Label><Input className="mt-1.5" value={form.client} onChange={(event) => setForm({ ...form, client: event.target.value })} /></div>
+        <div><Label className="text-xs text-muted-foreground">Country of employment</Label><Input className="mt-1.5" value={form.country} onChange={(event) => setForm({ ...form, country: event.target.value })} /></div>
+        <div><Label className="text-xs text-muted-foreground">Start date</Label><Input className="mt-1.5" type="date" value={form.startDate} onChange={(event) => setForm({ ...form, startDate: event.target.value })} /></div>
+      </div>
+      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+      <div className="mt-3 flex gap-2">
+        <Button size="sm" disabled={busy || invalid} onClick={() => void submit()}>
+          {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save changes
+        </Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => { setOpen(false); setError(""); }}>Discard</Button>
+      </div>
+    </div>
+  );
+}
+
+function DeleteProjectButton({ project, assignedCount }: { project: { id: string; name: string }; assignedCount: number }) {
+  const remove = useServerFn(deleteProject);
+  const refresh = useRefreshWorkspace();
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      await remove({ data: { projectId: project.id, confirmName: typed } });
+      setOpen(false);
+      await refresh();
+      await navigate({ to: "/projects" });
+    } catch (deleteError) {
+      setError((deleteError as Error).message);
+      setBusy(false);
+    }
+  }
+
+  const matches = typed.trim().toLowerCase() === project.name.trim().toLowerCase();
+  return (
+    <>
+      <Button size="sm" variant="outline" className="text-destructive" onClick={() => { setTyped(""); setError(""); setOpen(true); }}>
+        <Trash2 className="size-4" /> Delete project
+      </Button>
+      <AlertDialog open={open} onOpenChange={(next) => { if (!busy) setOpen(next); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this project permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes <span className="font-medium text-foreground">{project.name}</span> together with its trade requirements, document requirements, clearances, employee numbers and assignment records. It cannot be undone.
+              {assignedCount ? ` ${assignedCount} candidate${assignedCount === 1 ? " is" : "s are"} still attached and will go back to Available.` : ""} Candidate documents and profiles are kept. If you only want to stop the project, use Cancel project instead.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div>
+            <Label className="text-xs text-muted-foreground">Type the project name to confirm</Label>
+            <Input className="mt-1.5" value={typed} onChange={(event) => setTyped(event.target.value)} placeholder={project.name} />
+            {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Keep project</AlertDialogCancel>
+            <Button variant="destructive" disabled={busy || !matches} onClick={() => void submit()}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />} Delete project
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 

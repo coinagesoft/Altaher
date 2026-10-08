@@ -796,6 +796,54 @@ export const cancelProject = createServerFn({ method: "POST" })
     return updatedProject;
   });
 
+export const updateProject = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => z.object({ projectId: z.string().uuid(), name: z.string().trim().min(2).max(160), client: z.string().trim().min(2).max(160), country: z.string().trim().min(2).max(90), startDate: z.string().min(10) }).parse(input))
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Project Coordinator", "Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: before } = await supabaseAdmin.from("projects").select("name,client,country,start_date").eq("id", data.projectId).maybeSingle();
+    if (!before) throw new Error("Project not found");
+    const { data: project, error } = await supabaseAdmin.from("projects").update({ name: data.name, client: data.client, country: data.country, start_date: data.startDate }).eq("id", data.projectId).select().single();
+    if (error) throw new Error(error.message);
+    await supabaseAdmin.from("audit_events").insert({ project_id: data.projectId, action: "Project updated", actor_id: context.userId, details: { before, after: { name: data.name, client: data.client, country: data.country, start_date: data.startDate } } });
+    return project;
+  });
+
+export const deleteProject = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => z.object({ projectId: z.string().uuid(), confirmName: z.string().trim().min(1).max(160) }).parse(input))
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: project } = await supabaseAdmin.from("projects").select("id,name,client").eq("id", data.projectId).maybeSingle();
+    if (!project) throw new Error("Project not found");
+    if (project.name.trim().toLowerCase() !== data.confirmName.trim().toLowerCase()) throw new Error("The project name you typed does not match.");
+
+    const { data: attached } = await supabaseAdmin.from("candidates").select("id,status").eq("current_project_id", data.projectId);
+    const { data: past } = await supabaseAdmin.from("candidate_assignments").select("candidate_id").eq("project_id", data.projectId);
+    const releasedIds = (attached ?? []).map((candidate) => candidate.id);
+    const affectedIds = [...new Set([...releasedIds, ...(past ?? []).map((row) => row.candidate_id)])];
+
+    // Release everyone still attached so nobody is left with a status but no project.
+    for (const candidate of attached ?? []) {
+      const { error: releaseError } = await supabaseAdmin.from("candidates").update({ status: "Available", current_project_id: null, employee_number: null, rr_start_date: null, rr_days: null }).eq("id", candidate.id);
+      if (releaseError) throw new Error(releaseError.message);
+      await supabaseAdmin.from("travel_details").delete().eq("candidate_id", candidate.id);
+      await supabaseAdmin.from("audit_events").insert({ candidate_id: candidate.id, project_id: null, action: "Project deleted", previous_status: candidate.status, new_status: "Available", actor_id: context.userId, details: { project_name: project.name, client: project.client } });
+    }
+
+    // Assignments cascade away with the project, so keep a note on each person's own history first.
+    if (affectedIds.length) {
+      await supabaseAdmin.from("candidate_history").insert(affectedIds.map((candidateId) => ({ candidate_id: candidateId, project_id: null, event: "Project deleted", reason: `${project.name} (${project.client}) was deleted`, created_by: context.userId })));
+    }
+
+    const { error } = await supabaseAdmin.from("projects").delete().eq("id", data.projectId);
+    if (error) throw new Error(error.message);
+    await supabaseAdmin.from("audit_events").insert({ project_id: null, action: "Project deleted", actor_id: context.userId, details: { name: project.name, client: project.client, released: releasedIds.length } });
+    return { projectId: data.projectId, name: project.name, released: releasedIds.length };
+  });
+
 export const assignCandidateToProject = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input) => z.object({ candidateId: z.string().uuid(), projectId: z.string().uuid() }).parse(input))
