@@ -985,7 +985,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
   if (editing) return <CandidateForm role={role} candidate={candidate} onClose={() => setEditing(false)} onSaved={async () => { setEditing(false); await refresh(); }} />;
 
   return (
-    <Panel title={candidate.name} subtitle={`${candidate.candidate_number} · ${candidate.status === "Blacklisted" ? "BLACKLISTED" : candidate.status}`} onClose={onClose}>
+    <Panel title={[candidate.name, candidate.surname].filter(Boolean).join(" ")} subtitle={`${candidate.candidate_number} · ${candidate.status === "Blacklisted" ? "BLACKLISTED" : candidate.status}`} onClose={onClose}>
       <CandidatePhoto candidate={candidate} canEdit={canEdit} />
       <div className="grid gap-x-4 gap-y-3 text-sm sm:grid-cols-2">
         <Detail label="Surname" value={candidate.surname ?? "—"} />
