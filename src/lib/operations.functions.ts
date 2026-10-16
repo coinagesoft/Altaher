@@ -174,26 +174,39 @@ export const bootstrapInitialAdmin = createServerFn({ method: "POST" })
     return { role: "Super Admin" as const };
   });
 
+// The database API returns at most 1,000 rows per request. Pull every page so large tables (thousands of candidates) are never silently cut off.
+async function fetchAll(buildQuery: () => any, pageSize = 1000): Promise<{ data: any[]; error: any }> {
+  const all: any[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await buildQuery().range(from, from + pageSize - 1);
+    if (error) return { data: [], error };
+    const rows = data ?? [];
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+  }
+  return { data: all, error: null };
+}
+
 export const getWorkspaceData = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     const role = await requireRole(context, roles);
     const [candidates, projects, remarks, documents, documentTypes, requirements, tradeRequirements, travel, clearances, assignments, history, audit, trades, tradeCategories, employeeNumbers] = await Promise.all([
-      context.supabase.from("candidates").select("id,candidate_number,employee_number,surname,name,date_of_birth,place_of_birth,address,email,phone,contact_no_2,reference,bank_account_holder,bank_account_number,bank_name,bank_branch,bank_ifsc,bank_swift,candidate_kind,trade,category,skills,experience_years,rating,interview_rating,practical_rating,status,current_project_id,passport_number,passport_issue_date,passport_expiry,passport_place_of_issue,photo_path,photo_source,rr_start_date,rr_days,created_at,updated_at").order("created_at", { ascending: false }),
+      fetchAll(() => context.supabase.from("candidates").select("id,candidate_number,employee_number,surname,name,date_of_birth,place_of_birth,address,email,phone,contact_no_2,reference,bank_account_holder,bank_account_number,bank_name,bank_branch,bank_ifsc,bank_swift,candidate_kind,trade,category,skills,experience_years,rating,interview_rating,practical_rating,status,current_project_id,passport_number,passport_issue_date,passport_expiry,passport_place_of_issue,photo_path,photo_source,rr_start_date,rr_days,created_at,updated_at").order("created_at", { ascending: false }).order("id")),
       context.supabase.from("projects").select("id,name,client,country,start_date,required_headcount,cancelled_at,cancel_reason").order("start_date"),
-      context.supabase.from("candidate_remarks").select("id,candidate_id,author_id,text,created_at").order("created_at", { ascending: false }),
-      context.supabase.from("candidate_documents").select("id,candidate_id,project_id,document_type_id,file_name,expiry_date,uploaded_by,created_at"),
+      fetchAll(() => context.supabase.from("candidate_remarks").select("id,candidate_id,author_id,text,created_at").order("created_at", { ascending: false }).order("id")),
+      fetchAll(() => context.supabase.from("candidate_documents").select("id,candidate_id,project_id,document_type_id,file_name,expiry_date,uploaded_by,created_at").order("id")),
       context.supabase.from("document_types").select("id,name,category,usage_count,is_active").order("name"),
-      context.supabase.from("project_stage_requirements").select("id,project_id,stage,document_type_id"),
-      context.supabase.from("project_trade_requirements").select("id,project_id,trade,category,required_count").order("trade"),
-      context.supabase.from("travel_details").select("candidate_id,flight_date,flight_number,departure_airport,departure_time,arrival_airport,arrival_time,arrival_date,connections,ticket_number"),
-      context.supabase.from("mobilisation_clearances").select("candidate_id,project_id,medical_cleared,medical_date,visa_cleared,visa_issue_date,visa_expiry_date,police_cleared,police_date,updated_at"),
-      context.supabase.from("candidate_assignments").select("id,candidate_id,project_id,assigned_at,ended_at,end_reason,final_status").order("assigned_at", { ascending: false }),
+      fetchAll(() => context.supabase.from("project_stage_requirements").select("id,project_id,stage,document_type_id").order("id")),
+      fetchAll(() => context.supabase.from("project_trade_requirements").select("id,project_id,trade,category,required_count").order("trade").order("id")),
+      fetchAll(() => context.supabase.from("travel_details").select("candidate_id,flight_date,flight_number,departure_airport,departure_time,arrival_airport,arrival_time,arrival_date,connections,ticket_number").order("candidate_id")),
+      fetchAll(() => context.supabase.from("mobilisation_clearances").select("candidate_id,project_id,medical_cleared,medical_date,visa_cleared,visa_issue_date,visa_expiry_date,police_cleared,police_date,updated_at").order("candidate_id").order("project_id")),
+      fetchAll(() => context.supabase.from("candidate_assignments").select("id,candidate_id,project_id,assigned_at,ended_at,end_reason,final_status").order("assigned_at", { ascending: false }).order("id")),
       context.supabase.from("candidate_history").select("id,candidate_id,project_id,event,reason,details,created_by,created_at").order("created_at", { ascending: false }).limit(1000),
       context.supabase.from("audit_events").select("id,candidate_id,project_id,action,previous_status,new_status,actor_id,details,created_at").order("created_at", { ascending: false }).limit(500),
       context.supabase.from("trades").select("id,name").order("name"),
       context.supabase.from("trade_categories").select("id,trade_id,name").order("name"),
-      context.supabase.from("project_employee_numbers").select("project_id,candidate_id,employee_number"),
+      fetchAll(() => context.supabase.from("project_employee_numbers").select("project_id,candidate_id,employee_number").order("project_id").order("candidate_id")),
     ]);
     const errors = [candidates, projects, remarks, documents, documentTypes, requirements, tradeRequirements, travel, clearances, assignments, history, audit, trades, tradeCategories, employeeNumbers].map((result) => result.error).filter(Boolean);
     if (errors.length) throw new Error(errors[0]?.message ?? "Workspace data could not be loaded");
