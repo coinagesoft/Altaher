@@ -286,6 +286,7 @@ export type Database = {
           experience_years: number
           id: string
           interview_rating: number | null
+          interview_date: string | null
           name: string
           passport_expiry: string | null
           passport_issue_date: string | null
@@ -328,6 +329,7 @@ export type Database = {
           experience_years?: number
           id?: string
           interview_rating?: number | null
+          interview_date?: string | null
           name: string
           passport_expiry?: string | null
           passport_issue_date?: string | null
@@ -370,6 +372,7 @@ export type Database = {
           experience_years?: number
           id?: string
           interview_rating?: number | null
+          interview_date?: string | null
           name?: string
           passport_expiry?: string | null
           passport_issue_date?: string | null

@@ -192,7 +192,7 @@ export const getWorkspaceData = createServerFn({ method: "GET" })
   .handler(async ({ context }) => {
     const role = await requireRole(context, roles);
     const [candidates, projects, remarks, documents, documentTypes, requirements, tradeRequirements, travel, clearances, assignments, history, audit, trades, tradeCategories, employeeNumbers] = await Promise.all([
-      fetchAll(() => context.supabase.from("candidates").select("id,candidate_number,employee_number,surname,name,date_of_birth,place_of_birth,address,email,phone,contact_no_2,reference,bank_account_holder,bank_account_number,bank_name,bank_branch,bank_ifsc,bank_swift,candidate_kind,trade,category,skills,experience_years,rating,interview_rating,practical_rating,status,current_project_id,passport_number,passport_issue_date,passport_expiry,passport_place_of_issue,photo_path,photo_source,rr_start_date,rr_days,created_at,updated_at").order("created_at", { ascending: false }).order("id")),
+      fetchAll(() => context.supabase.from("candidates").select("id,candidate_number,employee_number,surname,name,date_of_birth,place_of_birth,address,email,phone,contact_no_2,reference,bank_account_holder,bank_account_number,bank_name,bank_branch,bank_ifsc,bank_swift,candidate_kind,trade,category,skills,experience_years,rating,interview_rating,interview_date,practical_rating,status,current_project_id,passport_number,passport_issue_date,passport_expiry,passport_place_of_issue,photo_path,photo_source,rr_start_date,rr_days,created_at,updated_at").order("created_at", { ascending: false }).order("id")),
       context.supabase.from("projects").select("id,name,client,country,start_date,required_headcount,cancelled_at,cancel_reason").order("start_date"),
       fetchAll(() => context.supabase.from("candidate_remarks").select("id,candidate_id,author_id,text,created_at").order("created_at", { ascending: false }).order("id")),
       fetchAll(() => context.supabase.from("candidate_documents").select("id,candidate_id,project_id,document_type_id,file_name,expiry_date,uploaded_by,created_at").order("id")),
@@ -995,6 +995,7 @@ export const changeCandidateStage = createServerFn({ method: "POST" })
         rrDays: z.number().int().min(1).max(365).optional(),
         reason: z.string().trim().max(400).optional(),
         interviewRating: z.number().min(0).max(10).optional(),
+        interviewDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid interview date").optional(),
         practicalRating: z.number().min(0).max(10).optional(),
         eocDate: z.string().optional(),
         fromTravelBatch: z.boolean().optional(),
@@ -1045,8 +1046,9 @@ export const changeCandidateStage = createServerFn({ method: "POST" })
         rr_start_date: data.nextStatus === "R&R" ? data.rrStartDate! : null,
         rr_days: data.nextStatus === "R&R" ? data.rrDays! : null,
         ...(data.interviewRating !== undefined ? { interview_rating: data.interviewRating } : {}),
+        ...(data.interviewDate !== undefined ? { interview_date: data.interviewDate } : {}),
         ...(data.practicalRating !== undefined ? { practical_rating: data.practicalRating } : {}),
-        ...(clearProject ? { interview_rating: null, practical_rating: null } : {}),
+        ...(clearProject ? { interview_rating: null, interview_date: null, practical_rating: null } : {}),
       })
       .eq("id", data.candidateId)
       .select()
@@ -1079,11 +1081,70 @@ export const changeCandidateStage = createServerFn({ method: "POST" })
       project_id: candidate.current_project_id,
       event: historyEvent,
       reason: data.reason || null,
-      details: { previous_status: candidate.status, new_status: data.nextStatus, ...(data.interviewRating !== undefined ? { interview_rating: data.interviewRating } : {}), ...(data.practicalRating !== undefined ? { practical_rating: data.practicalRating } : {}) },
+      details: { previous_status: candidate.status, new_status: data.nextStatus, ...(data.interviewRating !== undefined ? { interview_rating: data.interviewRating } : {}), ...(data.interviewDate !== undefined ? { interview_date: data.interviewDate } : {}), ...(data.practicalRating !== undefined ? { practical_rating: data.practicalRating } : {}) },
       created_by: context.userId,
     });
     await supabaseAdmin.from("audit_events").insert({ candidate_id: data.candidateId, project_id: candidate.current_project_id, action: clearProject ? "Candidate returned to Available" : "Candidate stage changed", previous_status: candidate.status, new_status: data.nextStatus, actor_id: context.userId, details: data.reason ? { reason: data.reason } : {} });
     return updated;
+  });
+
+export const setInterviewDate = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) =>
+    z
+      .object({
+        candidateId: z.string().uuid(),
+        interviewDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid interview date").nullable(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Recruiter", "Project Coordinator", "Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: candidate, error } = await supabaseAdmin.from("candidates").select("status,current_project_id,interview_date").eq("id", data.candidateId).single();
+    if (error || !candidate) throw new Error("Candidate not found");
+    if (!["Interview", "Shortlisted"].includes(candidate.status)) throw new Error("The interview date can only be changed while the candidate is at the Interview stage");
+    const { error: updateError } = await supabaseAdmin.from("candidates").update({ interview_date: data.interviewDate }).eq("id", data.candidateId);
+    if (updateError) throw new Error(updateError.message);
+    await supabaseAdmin.from("candidate_history").insert({
+      candidate_id: data.candidateId,
+      project_id: candidate.current_project_id,
+      event: data.interviewDate ? "Interview date set" : "Interview date cleared",
+      details: { previous_date: candidate.interview_date, interview_date: data.interviewDate },
+      created_by: context.userId,
+    });
+    await supabaseAdmin.from("audit_events").insert({ candidate_id: data.candidateId, project_id: candidate.current_project_id, action: "Interview date updated", actor_id: context.userId, details: { interview_date: data.interviewDate } });
+    return { interviewDate: data.interviewDate };
+  });
+
+export const retestPracticalTest = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) =>
+    z
+      .object({
+        candidateId: z.string().uuid(),
+        reason: z.string().trim().max(400).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Recruiter", "Project Coordinator", "Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: candidate, error } = await supabaseAdmin.from("candidates").select("status,current_project_id,practical_rating").eq("id", data.candidateId).single();
+    if (error || !candidate) throw new Error("Candidate not found");
+    if (candidate.status !== "Practical Test") throw new Error("A retest can only be requested while the candidate is at the Practical Test stage");
+    const { error: updateError } = await supabaseAdmin.from("candidates").update({ practical_rating: null }).eq("id", data.candidateId);
+    if (updateError) throw new Error(updateError.message);
+    await supabaseAdmin.from("candidate_history").insert({
+      candidate_id: data.candidateId,
+      project_id: candidate.current_project_id,
+      event: "Practical test retest",
+      reason: data.reason || null,
+      details: { previous_practical_rating: candidate.practical_rating },
+      created_by: context.userId,
+    });
+    await supabaseAdmin.from("audit_events").insert({ candidate_id: data.candidateId, project_id: candidate.current_project_id, action: "Practical test retest requested", actor_id: context.userId, details: data.reason ? { reason: data.reason } : {} });
+    return { ok: true };
   });
 
 export const appendCandidateRemark = createServerFn({ method: "POST" })

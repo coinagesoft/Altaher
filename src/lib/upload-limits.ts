@@ -1,7 +1,7 @@
 // Single source of truth for document upload size limits (used by the browser forms and the server).
 const MB = 1024 * 1024;
 
-export const PASSPORT_MAX_BYTES = 1 * MB; // Passport copy: max 1 MB
+export const PASSPORT_MAX_BYTES = 2 * MB; // Passport copy: max 2 MB
 export const CV_MAX_BYTES = 10 * MB; // CV / resume: max 10 MB
 export const OTHER_MAX_BYTES = 3 * MB; // Every other document: max 3 MB
 

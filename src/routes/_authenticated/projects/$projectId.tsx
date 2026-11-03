@@ -20,6 +20,8 @@ import { assertFileSize } from "@/lib/upload-limits";
 import {
   cancelProject,
   changeCandidateStage,
+  setInterviewDate,
+  retestPracticalTest,
   deleteProject,
   downloadCandidateDocumentsZip,
   downloadProjectDocumentsZip,
@@ -185,7 +187,7 @@ function ProjectDetailPage() {
 
 type CandidateRow = ReturnType<typeof useWorkspace>["data"] extends infer Data ? Data extends { candidates: Array<infer Row> } ? Row : never : never;
 
-type StageExtra = { rrStartDate?: string; rrDays?: number; reason?: string; interviewRating?: number; practicalRating?: number; eocDate?: string };
+type StageExtra = { rrStartDate?: string; rrDays?: number; reason?: string; interviewRating?: number; interviewDate?: string; practicalRating?: number; eocDate?: string };
 
 const REJECTION_REASONS = ["Did not attend", "Not suitable for the trade", "Failed the interview", "Salary expectations", "Backed out", "Client rejected"] as const;
 const CANCEL_REASONS = ["Backed Out", "Client Rejected", "Medically Unfit", "Police Clearance not obtained", "Visa rejected", "Project completion", "Other"] as const;
@@ -219,6 +221,17 @@ function ReasonPicker({ options, value, onChange }: { options: readonly string[]
   );
 }
 
+function groupByTrade(rows: CandidateRow[]) {
+  const groups = new Map<string, CandidateRow[]>();
+  for (const candidate of rows) {
+    const trade = ((candidate as { trade: string | null }).trade ?? "").trim() || "No trade listed";
+    groups.set(trade, [...(groups.get(trade) ?? []), candidate]);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => (a === "No trade listed" ? 1 : b === "No trade listed" ? -1 : a.localeCompare(b)))
+    .map(([trade, items]) => ({ trade, rows: items }));
+}
+
 function SelectionBoard({ projectId, candidates, onMove, onOpen }: { projectId: string; candidates: CandidateRow[]; onMove: (id: string, next: string, ok: string, extra?: StageExtra) => void; onOpen: (id: string) => void }) {
   const legacy = candidates.filter((candidate) => (candidate as { status: string }).status === "Shortlisted");
   const columns = ["Assigned", "Interview", "Practical Test", "Passed", "Selected"] as const;
@@ -243,9 +256,21 @@ function SelectionBoard({ projectId, candidates, onMove, onOpen }: { projectId: 
               <Badge variant="secondary">{rows.length}</Badge>
             </header>
             <div className="mt-3 space-y-3">
-              {rows.map((candidate) => (
-                <SelectionCard key={(candidate as { id: string }).id} projectId={projectId} stage={status} candidate={candidate} onMove={onMove} onOpen={onOpen} />
-              ))}
+              {status === "Selected"
+                ? groupByTrade(rows).map((group) => (
+                    <div key={group.trade} className="space-y-2">
+                      <div className="flex items-center justify-between gap-2 border-b border-border pb-1">
+                        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.trade}</h3>
+                        <Badge variant="outline">{group.rows.length}</Badge>
+                      </div>
+                      {group.rows.map((candidate) => (
+                        <SelectionCard key={(candidate as { id: string }).id} projectId={projectId} stage={status} candidate={candidate} onMove={onMove} onOpen={onOpen} />
+                      ))}
+                    </div>
+                  ))
+                : rows.map((candidate) => (
+                    <SelectionCard key={(candidate as { id: string }).id} projectId={projectId} stage={status} candidate={candidate} onMove={onMove} onOpen={onOpen} />
+                  ))}
               {!rows.length ? <p className="text-xs text-muted-foreground">Nobody at this stage.</p> : null}
             </div>
           </section>
@@ -259,9 +284,14 @@ function SelectionCard({ projectId, stage, candidate, onMove, onOpen }: { projec
   const refresh = useRefreshWorkspace();
   const resolveType = useServerFn(resolveDocumentType);
   const recordDocument = useServerFn(recordCandidateDocument);
-  const row = candidate as { id: string; name: string; surname?: string | null; candidate_number: string; trade: string | null; interview_rating: number | null; practical_rating: number | null };
+  const row = candidate as { id: string; name: string; surname?: string | null; candidate_number: string; trade: string | null; interview_rating: number | null; interview_date?: string | null; practical_rating: number | null };
 
-  const [mode, setMode] = useState<"" | "reject">("");
+  const saveInterviewDate = useServerFn(setInterviewDate);
+  const [interviewDate, setInterviewDateValue] = useState(row.interview_date ?? "");
+  const saveRetest = useServerFn(retestPracticalTest);
+  const workspaceForHistory = useWorkspace();
+  const retestCount = (workspaceForHistory.data?.history ?? []).filter((item) => item.candidate_id === row.id && item.project_id === projectId && item.event === "Practical test retest").length;
+  const [mode, setMode] = useState<"" | "reject" | "retest">("");
   const [reason, setReason] = useState("");
   const [rating, setRating] = useState("");
   const [practical, setPractical] = useState("");
@@ -292,6 +322,8 @@ function SelectionCard({ projectId, stage, candidate, onMove, onOpen }: { projec
     <article className="rounded-md border border-border p-3">
       <button type="button" onClick={() => onOpen(row.id)} className="text-sm font-medium underline-offset-2 hover:underline">{fullName}</button>
       <p className="text-xs text-muted-foreground">{row.candidate_number} · {row.trade || "No trade listed"}</p>
+      {row.interview_date ? <p className="mt-1 text-xs text-muted-foreground">Interview date: <span className="font-medium text-foreground">{formatDate(`${row.interview_date}T12:00:00`)}</span></p> : null}
+      {stage === "Practical Test" && retestCount > 0 ? <p className="mt-1 text-xs text-amber-600">Retest #{retestCount} in progress</p> : null}
       {row.interview_rating !== null || row.practical_rating !== null ? (
         <p className="mt-1 text-xs text-muted-foreground">
           {row.interview_rating !== null ? `Interview ${Number(row.interview_rating).toFixed(1)}` : ""}
@@ -302,8 +334,14 @@ function SelectionCard({ projectId, stage, candidate, onMove, onOpen }: { projec
 
       {mode === "" ? (
         <div className="mt-3 space-y-3">
+          {stage === "Assigned" ? (
+            <div>
+              <Label className="text-xs text-muted-foreground">Interview date (optional)</Label>
+              <Input className="mt-1 h-9" type="date" value={interviewDate} onChange={(event) => setInterviewDateValue(event.target.value)} />
+            </div>
+          ) : null}
           <div className="flex flex-wrap gap-2">
-            {stage === "Assigned" ? <Button size="sm" onClick={() => onMove(row.id, "Interview", `${fullName} moved to Interview.`)}>Move to Interview <ArrowRight className="size-3.5" /></Button> : null}
+            {stage === "Assigned" ? <Button size="sm" onClick={() => { const extra: StageExtra = interviewDate ? { interviewDate } : {}; onMove(row.id, "Interview", interviewDate ? `${fullName} moved to Interview on ${formatDate(`${interviewDate}T12:00:00`)}.` : `${fullName} moved to Interview.`, extra); }}>Move to Interview <ArrowRight className="size-3.5" /></Button> : null}
             {stage === "Passed" ? (
               <Button size="sm" onClick={() => onMove(row.id, "Selected", `${fullName} was forwarded to Mobilisation.`)}>Forward to Mobilisation <ArrowRight className="size-3.5" /></Button>
             ) : null}
@@ -311,10 +349,20 @@ function SelectionCard({ projectId, stage, candidate, onMove, onOpen }: { projec
             {stage !== "Selected" ? (
               <Button size="sm" variant="outline" onClick={() => { setReason(""); setMode("reject"); }}>{stage === "Practical Test" ? "Fail" : "Reject"}</Button>
             ) : null}
+            {stage === "Practical Test" ? <Button size="sm" variant="outline" onClick={() => { setReason(""); setError(""); setMode("retest"); }}>Retest</Button> : null}
           </div>
           {stage === "Interview" ? (
             <div className="rounded-md border border-dashed border-border p-2">
-              <Label className="text-xs text-muted-foreground">Interview rating (0-10, optional)</Label>
+              <Label className="text-xs text-muted-foreground">Interview date</Label>
+              <div className="mt-1 space-y-2">
+                <Input className="h-9 w-full min-w-0" type="date" value={interviewDate} onChange={(event) => setInterviewDateValue(event.target.value)} />
+                <Button size="sm" variant="outline" disabled={busy || interviewDate === (row.interview_date ?? "")} onClick={async () => {
+                  setBusy(true); setError("");
+                  try { await saveInterviewDate({ data: { candidateId: row.id, interviewDate: interviewDate || null } }); await refresh(); } catch (saveError) { setError((saveError as Error).message); } finally { setBusy(false); }
+                }}>Save</Button>
+              </div>
+              {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+              <Label className="mt-3 block text-xs text-muted-foreground">Interview rating (0-10, optional)</Label>
               <Input className="mt-1 h-9" type="number" min="0" max="10" step="0.1" value={rating} onChange={(event) => setRating(event.target.value)} />
               <div className="mt-2 flex gap-2">
                 <Button size="sm" disabled={!validRating(rating)} onClick={() => { const extra: StageExtra = rating !== "" ? { interviewRating: Number(rating) } : {}; onMove(row.id, "Practical Test", `${fullName} moved to Practical Test.`, extra); setRating(""); }}>
@@ -339,6 +387,27 @@ function SelectionCard({ projectId, stage, candidate, onMove, onOpen }: { projec
               </div>
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {mode === "retest" ? (
+        <div className="mt-2 rounded-md border border-dashed border-border p-2">
+          <Label className="text-xs text-muted-foreground">Reason for retest (optional)</Label>
+          <Input className="mt-1 h-9" placeholder="e.g. Needs another attempt" value={reason} onChange={(event) => setReason(event.target.value)} />
+          {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+          <div className="mt-2 flex gap-2">
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true); setError("");
+                try { await saveRetest({ data: { candidateId: row.id, ...(reason.trim() ? { reason: reason.trim() } : {}) } }); setPractical(""); setMode(""); await refresh(); } catch (retestError) { setError((retestError as Error).message); } finally { setBusy(false); }
+              }}
+            >
+              Confirm retest
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setMode("")}>Cancel</Button>
+          </div>
         </div>
       ) : null}
 
@@ -396,6 +465,7 @@ function OnSiteTab({ projectId, role, candidates, required, onMove, onOpen }: { 
       "Surname",
       "Name",
       "Trade",
+      "Mobile Number",
       "Address",
       "Date of Birth",
       "Passport Number",
@@ -420,6 +490,7 @@ function OnSiteTab({ projectId, role, candidates, required, onMove, onOpen }: { 
         row["surname"] ?? "",
         row["name"] ?? "",
         row["trade"] ?? "",
+        row["phone"] ?? "",
         row["address"] ?? "",
         asDate(row["date_of_birth"]),
         row["passport_number"] ?? "",
@@ -1073,6 +1144,7 @@ type BatchTraveller = {
   police: string;
   arrival: string;
   ticketNumber: string;
+  mobile: string;
 };
 
 type Batch = {
@@ -1220,6 +1292,7 @@ function TravelBatches({ projectId }: { projectId: string }) {
         police: clearance?.police_cleared ? "YES" : "NO",
         arrival: lastLeg ? [lastLeg.arrivalDate ? formatDate(lastLeg.arrivalDate) : "", lastLeg.arrivalTime ?? ""].filter(Boolean).join(" ") : [entry.arrivalDate ? formatDate(entry.arrivalDate) : "", entry.arrivalTime].filter(Boolean).join(" "),
         ticketNumber: (detail as { ticket_number?: string | null }).ticket_number ?? "",
+        mobile: (candidate as { phone?: string | null }).phone ?? "",
       });
       map.set(key, entry);
     });
@@ -1232,7 +1305,7 @@ function TravelBatches({ projectId }: { projectId: string }) {
     const rows: Array<Array<string>> = [
       [siteName],
       [`${batch.label} · TRAVELLING ON ${formatDate(batch.flightDate)} · ${[batch.flightNumber, ...batch.legs.map((leg) => leg.flightNumber)].join(" / ")} · ${batch.route.replace(/ → /g, " - ")}`],
-      ["EMP NO", "NAME", "PASSPORT", "TICKET NO", "TRADE", "VISA", "MED", "SHOES", "TEST", "ARRIVAL DATE & TIME"],
+      ["EMP NO", "NAME", "PASSPORT", "TICKET NO", "TRADE", "MOBILE NO", "VISA", "MED", "SHOES", "TEST", "ARRIVAL DATE & TIME"],
       [],
     ];
     batch.travellers.forEach((traveller) => {
@@ -1242,6 +1315,7 @@ function TravelBatches({ projectId }: { projectId: string }) {
         traveller.passport,
         traveller.ticketNumber,
         traveller.trade.toUpperCase(),
+        traveller.mobile,
         traveller.visa,
         traveller.medical,
         traveller.police,
@@ -1257,7 +1331,7 @@ function TravelBatches({ projectId }: { projectId: string }) {
     const book = XLSX.utils.book_new();
     selection.forEach((batch) => {
       const sheet = XLSX.utils.aoa_to_sheet(sheetRows(batch));
-      sheet["!cols"] = [{ wch: 12 }, { wch: 34 }, { wch: 14 }, { wch: 18 }, { wch: 22 }, { wch: 6 }, { wch: 6 }, { wch: 7 }, { wch: 6 }, { wch: 24 }];
+      sheet["!cols"] = [{ wch: 12 }, { wch: 34 }, { wch: 14 }, { wch: 18 }, { wch: 22 }, { wch: 16 }, { wch: 6 }, { wch: 6 }, { wch: 7 }, { wch: 6 }, { wch: 24 }];
       XLSX.utils.book_append_sheet(book, sheet, batch.label.slice(0, 31));
     });
     XLSX.writeFile(book, fileName);
@@ -2159,6 +2233,7 @@ function AllEmployeesTab({ projectId, role, onOpen }: { projectId: string; role:
       surname: candidate["surname"] ?? "",
       name: candidate["name"] ?? "",
       trade: candidate["trade"] ?? "",
+      mobile: candidate["phone"] ?? "",
       dob: candidate["date_of_birth"] ?? "",
       passport: candidate["passport_number"] ?? "",
       issue: candidate["passport_issue_date"] ?? "",
@@ -2183,6 +2258,7 @@ function AllEmployeesTab({ projectId, role, onOpen }: { projectId: string; role:
       "Surname",
       "Name",
       "Trade",
+      "Mobile Number",
       "Date of Birth",
       "Passport number",
       "Issue Date",
@@ -2198,7 +2274,7 @@ function AllEmployeesTab({ projectId, role, onOpen }: { projectId: string; role:
     for (const entry of people) {
       const row = rowFor(entry);
       const asDate = (value: string) => (value ? formatDate(value) : "");
-      rows.push([row.employee, row.surname, row.name, row.trade, asDate(row.dob), row.passport, asDate(row.issue), asDate(row.expiry), row.stage, asDate(row.medical), asDate(row.visa), asDate(row.police), asDate(row.travelDate)]);
+      rows.push([row.employee, row.surname, row.name, row.trade, row.mobile, asDate(row.dob), row.passport, asDate(row.issue), asDate(row.expiry), row.stage, asDate(row.medical), asDate(row.visa), asDate(row.police), asDate(row.travelDate)]);
     }
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     sheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: header.length - 1 } }];

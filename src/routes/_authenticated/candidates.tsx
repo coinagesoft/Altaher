@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
@@ -587,9 +587,20 @@ function CandidatesPage() {
   );
 }
 
-function Panel({ title, subtitle, onClose, children }: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode }) {
+function Panel({ title, subtitle, onClose, closeOnBackdrop = true, children }: { title: string; subtitle?: string; onClose: () => void; closeOnBackdrop?: boolean; children: React.ReactNode }) {
+  // Only close when the press AND the release both happened on the backdrop itself.
+  // Otherwise a text-selection drag that ends outside the panel would close it.
+  const pressedOnBackdrop = useRef(false);
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-foreground/20 backdrop-blur-sm" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex justify-end bg-foreground/20 backdrop-blur-sm"
+      onMouseDown={(event) => { pressedOnBackdrop.current = event.target === event.currentTarget; }}
+      onClick={(event) => {
+        const clean = pressedOnBackdrop.current && event.target === event.currentTarget;
+        pressedOnBackdrop.current = false;
+        if (closeOnBackdrop && clean) onClose();
+      }}
+    >
       <aside className="h-full w-full max-w-xl overflow-y-auto border-l border-border bg-card shadow-xl" onClick={(event) => event.stopPropagation()}>
         <div className="sticky top-0 flex items-start justify-between gap-4 border-b border-border bg-card px-5 py-4">
           <div>
@@ -602,6 +613,14 @@ function Panel({ title, subtitle, onClose, children }: { title: string; subtitle
       </aside>
     </div>
   );
+}
+
+const DRAFT_KEY = "candidate-form-draft-v1";
+function readDraft(): typeof emptyForm | null {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_KEY);
+    return raw ? ({ ...emptyForm, ...JSON.parse(raw) } as typeof emptyForm) : null;
+  } catch { return null; }
 }
 
 const INITIAL_DOCS = ["CV", "Passport", "Aadhar Card"] as const;
@@ -643,9 +662,25 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
         passportExpiry: candidate.passport_expiry ?? "",
         passportPlaceOfIssue: candidate.passport_place_of_issue ?? "",
       }
-    : emptyForm);
+    : readDraft() ?? emptyForm);
+  const initialFormJson = useRef(JSON.stringify(form));
   const [error, setError] = useState("");
   const [duplicate, setDuplicate] = useState("");
+
+  // Keep an unsaved NEW-candidate draft so nothing is lost if the panel closes or the tab reloads.
+  useEffect(() => {
+    if (candidate) return;
+    try {
+      if (JSON.stringify(form) === JSON.stringify(emptyForm)) sessionStorage.removeItem(DRAFT_KEY);
+      else sessionStorage.setItem(DRAFT_KEY, JSON.stringify(form));
+    } catch { /* storage unavailable – ignore */ }
+  }, [form, candidate]);
+
+  const hasChanges = JSON.stringify(form) !== initialFormJson.current || Object.values(files).some(Boolean);
+  function requestClose() {
+    if (hasChanges && !window.confirm("Close without saving? Your typed details are kept as a draft for the next New candidate, but attached files will be cleared.")) return;
+    onClose();
+  }
   const readPassportFn = useServerFn(readPassportDetails);
   const [reading, setReading] = useState(false);
   const [readState, setReadState] = useState("");
@@ -779,14 +814,17 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
       }
       return created;
     },
-    onSuccess: onSaved,
+    onSuccess: () => {
+      try { sessionStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+      onSaved();
+    },
     onError: (mutationError: Error) => setError(mutationError.message),
   });
 
   if (role !== "Data Entry" && role !== "Recruiter" && !isAdminRole(role)) return null;
 
   return (
-    <Panel title={candidate ? "Edit candidate" : "New candidate"} subtitle="New records start off the Available list until CV and Passport are on file." onClose={onClose}>
+    <Panel title={candidate ? "Edit candidate" : "New candidate"} subtitle="New records start off the Available list until CV and Passport are on file." onClose={requestClose} closeOnBackdrop={false}>
       {!candidate ? (
         <section className="rounded-md border border-dashed border-border p-3">
           <p className="text-sm font-medium">Start with the passport copy</p>
@@ -914,7 +952,7 @@ function CandidateForm({ role, candidate, onClose, onSaved }: { role: Role; cand
         <Button onClick={() => { setError(""); save.mutate(); }} disabled={pendingLookAlikes.length > 0 || save.isPending || form.name.trim().length < 2 || Boolean(candidate && !form.candidateNumber.trim()) || Boolean(duplicate)}>
           {save.isPending ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save candidate
         </Button>
-        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button variant="outline" onClick={requestClose}>Cancel</Button>
       </div>
     </Panel>
   );
