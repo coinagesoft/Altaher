@@ -1188,21 +1188,112 @@ export const inviteStaffAccount = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await requireRole(context, ["Super Admin"]);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: invited, error } = await supabaseAdmin.auth.admin.inviteUserByEmail(data.email, { redirectTo: data.redirectTo });
-    if (error) throw new Error(error.message);
-    const userId = invited.user?.id;
+
+    let userId: string | undefined;
+    let inviteLink: string | undefined;
+    let emailSent = false;
+    let note: string | undefined;
+
+    // 1. First attempt to send invitation email via Supabase Auth mailer
+    const { data: invited, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(data.email, {
+      redirectTo: data.redirectTo,
+    });
+
+    if (!inviteError && invited.user?.id) {
+      userId = invited.user.id;
+      emailSent = true;
+    } else {
+      // 2. If sending email failed (e.g. "Error sending invite email" because SMTP is not configured on Supabase),
+      // fall back to generating an invitation link directly without needing an active SMTP server
+      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+        type: "invite",
+        email: data.email,
+        options: { redirectTo: data.redirectTo },
+      });
+
+      if (!linkError && linkData.user?.id) {
+        userId = linkData.user.id;
+        inviteLink = linkData.properties?.action_link;
+        note = "The auth server could not send the email automatically (SMTP is not configured on Supabase). A direct invite link has been generated.";
+      } else {
+        // If generateLink with type "invite" failed because user already exists in auth.users:
+        const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
+        const existingUser = userList?.users?.find(
+          (u) => u.email?.trim().toLowerCase() === data.email.trim().toLowerCase(),
+        );
+        if (existingUser) {
+          userId = existingUser.id;
+          const { data: recData } = await supabaseAdmin.auth.admin.generateLink({
+            type: "recovery",
+            email: data.email,
+            options: { redirectTo: data.redirectTo },
+          });
+          inviteLink = recData?.properties?.action_link;
+          note = "User account already exists. A direct access / password setup link has been generated.";
+        } else {
+          throw new Error(inviteError?.message || linkError?.message || "Failed to create user invitation");
+        }
+      }
+    }
+
     if (!userId) throw new Error("The invitation could not be created");
+
     const { data: existing } = await supabaseAdmin.from("user_roles").select("id").eq("user_id", userId).maybeSingle();
     const result = existing
       ? await supabaseAdmin.from("user_roles").update({ role: data.role, is_active: true }).eq("id", existing.id)
       : await supabaseAdmin.from("user_roles").insert({ user_id: userId, role: data.role });
     if (result.error) throw new Error(result.error.message);
-    return { id: userId, email: data.email, role: data.role };
+
+    return {
+      id: userId,
+      email: data.email,
+      role: data.role,
+      emailSent,
+      inviteLink,
+      note,
+    };
+  });
+
+export const getStaffInviteLink = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => z.object({ email: z.string().email(), redirectTo: z.string().url() }).parse(input))
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Super Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    let inviteLink: string | undefined;
+    const { data: inviteData, error: inviteErr } = await supabaseAdmin.auth.admin.generateLink({
+      type: "invite",
+      email: data.email,
+      options: { redirectTo: data.redirectTo },
+    });
+    if (!inviteErr && inviteData?.properties?.action_link) {
+      inviteLink = inviteData.properties.action_link;
+    } else {
+      const { data: recData, error: recErr } = await supabaseAdmin.auth.admin.generateLink({
+        type: "recovery",
+        email: data.email,
+        options: { redirectTo: data.redirectTo },
+      });
+      if (recErr) throw new Error(recErr.message || inviteErr?.message || "Failed to generate invite link");
+      inviteLink = recData?.properties?.action_link;
+    }
+    return { inviteLink };
+  });
+
+export const resetStaffPassword = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((input) => z.object({ userId: z.string().uuid(), newPassword: z.string().min(8) }).parse(input))
+  .handler(async ({ data, context }) => {
+    await requireRole(context, ["Super Admin"]);
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(data.userId, { password: data.newPassword });
+    if (error) throw new Error(error.message);
+    return { success: true };
   });
 
 export const createStaffAccount = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((input) => z.object({ email: z.string().email(), password: z.string().min(10), role: z.enum(roles) }).parse(input))
+  .inputValidator((input) => z.object({ email: z.string().email(), password: z.string().min(8), role: z.enum(roles) }).parse(input))
   .handler(async ({ data, context }) => {
     await requireRole(context, ["Super Admin"]);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -1210,11 +1301,11 @@ export const createStaffAccount = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     const userId = created.user?.id;
     if (!userId) throw new Error("Account could not be created");
-    const { error: roleError } = await supabaseAdmin.from("user_roles").insert({ user_id: userId, role: data.role });
-    if (roleError) {
-      await supabaseAdmin.auth.admin.deleteUser(userId);
-      throw roleError;
-    }
+    const { data: existing } = await supabaseAdmin.from("user_roles").select("id").eq("user_id", userId).maybeSingle();
+    const result = existing
+      ? await supabaseAdmin.from("user_roles").update({ role: data.role, is_active: true }).eq("id", existing.id)
+      : await supabaseAdmin.from("user_roles").insert({ user_id: userId, role: data.role });
+    if (result.error) throw new Error(result.error.message);
     return { id: userId, email: data.email, role: data.role };
   });
 
