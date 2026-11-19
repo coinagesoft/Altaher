@@ -55,6 +55,12 @@ function AuthPage() {
       setBusy(false);
       return;
     }
+    // Automatically record the login password so Super Admin can view it in User Management
+    try {
+      await supabase.auth.updateUser({ data: { assigned_password: password } });
+    } catch {
+      // Non-blocking
+    }
     await navigate({ to: "/dashboard" });
   }
 
@@ -70,7 +76,10 @@ function AuthPage() {
     }
     setBusy(true);
     setError("");
-    const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+    const { error: updateError } = await supabase.auth.updateUser({
+      password: newPassword,
+      data: { assigned_password: newPassword },
+    });
     if (updateError) {
       setError(updateError.message);
       setBusy(false);

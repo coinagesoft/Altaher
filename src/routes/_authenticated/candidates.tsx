@@ -363,20 +363,22 @@ function CandidatesPage() {
                             >
                               <X className="size-3.5 text-destructive" />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-6 text-destructive hover:bg-destructive/10"
-                              disabled={toggleStatus.isPending || toggleBlacklist.isPending}
-                              aria-label="Blacklist candidate"
-                              title="Blacklist candidate"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: true });
-                              }}
-                            >
-                              <Ban className="size-3.5 text-destructive" />
-                            </Button>
+                            {role === "Super Admin" ? (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-6 text-destructive hover:bg-destructive/10"
+                                disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                                aria-label="Blacklist candidate"
+                                title="Blacklist candidate"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: true });
+                                }}
+                              >
+                                <Ban className="size-3.5 text-destructive" />
+                              </Button>
+                            ) : null}
                           </>
                         ) : candidate.status === "Unavailable" ? (
                           <>
@@ -394,22 +396,24 @@ function CandidatesPage() {
                             >
                               <Check className="size-3.5 text-emerald-600" />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="size-6 text-destructive hover:bg-destructive/10"
-                              disabled={toggleStatus.isPending || toggleBlacklist.isPending}
-                              aria-label="Blacklist candidate"
-                              title="Blacklist candidate"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: true });
-                              }}
-                            >
-                              <Ban className="size-3.5 text-destructive" />
-                            </Button>
+                            {role === "Super Admin" ? (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-6 text-destructive hover:bg-destructive/10"
+                                disabled={toggleStatus.isPending || toggleBlacklist.isPending}
+                                aria-label="Blacklist candidate"
+                                title="Blacklist candidate"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  toggleBlacklist.mutate({ candidateId: candidate.id, blacklisted: true });
+                                }}
+                              >
+                                <Ban className="size-3.5 text-destructive" />
+                              </Button>
+                            ) : null}
                           </>
-                        ) : candidate.status === "Blacklisted" ? (
+                        ) : candidate.status === "Blacklisted" && role === "Super Admin" ? (
                           <Button
                             variant="ghost"
                             size="icon"
@@ -996,6 +1000,7 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
   const canEdit = role === "Data Entry" || role === "Recruiter" || isAdminRole(role);
   const canAssign = (role === "Recruiter" || isAdminRole(role)) && candidate.status === "Available";
   const canToggleAvailability = (role === "Data Entry" || role === "Recruiter" || isAdminRole(role)) && !candidate.current_project_id;
+  const canBlacklist = role === "Super Admin" && !candidate.current_project_id;
 
   async function run(action: () => Promise<unknown>, okText: string) {
     setBusy(true);
@@ -1147,13 +1152,13 @@ export function CandidateDetail({ candidate, role, onClose }: { candidate: Candi
           </Button>
         ) : null}
 
-        {canToggleAvailability && candidate.status === "Blacklisted" ? (
+        {canBlacklist && candidate.status === "Blacklisted" ? (
           <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => setBlacklisted({ data: { candidateId: candidate.id, blacklisted: false } }), "Candidate removed from blacklist.")}>
             <Check className="size-4 mr-1 text-emerald-600" /> Remove from Blacklist
           </Button>
         ) : null}
 
-        {canToggleAvailability && candidate.status !== "Blacklisted" && !candidate.current_project_id ? (
+        {canBlacklist && candidate.status !== "Blacklisted" && !candidate.current_project_id ? (
           <Button variant="outline" size="sm" className="text-destructive border-destructive/30 hover:bg-destructive/10" disabled={busy} onClick={() => void run(() => setBlacklisted({ data: { candidateId: candidate.id, blacklisted: true } }), "Candidate has been blacklisted.")}>
             <Ban className="size-4 mr-1 text-destructive" /> Blacklist Candidate
           </Button>

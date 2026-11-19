@@ -1,7 +1,19 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { Check, Copy, KeyRound, Loader2, Mail, ShieldCheck, UserPlus, Info } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Loader2,
+  Mail,
+  ShieldCheck,
+  Sparkles,
+  UserPlus,
+  Info,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +42,15 @@ import { ROLES, formatDate } from "@/lib/workspace";
 
 type Role = (typeof ROLES)[number];
 
+function generateSecurePassword() {
+  const chars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*";
+  let pwd = "AT@";
+  for (let i = 0; i < 7; i++) {
+    pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return pwd;
+}
+
 export function StaffSettings() {
   const queryClient = useQueryClient();
   const fetchStaff = useServerFn(listStaffAccounts);
@@ -43,12 +64,19 @@ export function StaffSettings() {
   const [mode, setMode] = useState<"invite" | "create">("invite");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [role, setRole] = useState<Role>("Data Entry");
   const [generatedInviteLink, setGeneratedInviteLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  const [resetTarget, setResetTarget] = useState<{ id: string; email: string } | null>(null);
-  const [newPasswordInput, setNewPasswordInput] = useState("");
+  // Password modal state
+  const [passwordTarget, setPasswordTarget] = useState<{
+    id: string;
+    email: string;
+    hasExistingPassword: boolean;
+  } | null>(null);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [showPassword, setShowPassword] = useState(true);
 
   const [message, setMessage] = useState<{ tone: "ok" | "error" | "info"; text: string } | null>(null);
 
@@ -61,7 +89,6 @@ export function StaffSettings() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      // Fallback
       setMessage({ tone: "info", text: "Link generated. Please copy it from the text box." });
     }
   };
@@ -95,7 +122,7 @@ export function StaffSettings() {
     onSuccess: (result) => {
       setMessage({
         tone: "ok",
-        text: `Account created for ${result.email} with role "${result.role}". They can sign in immediately with the password provided.`,
+        text: `Account created for ${result.email} with password "${result.password}". They can sign in immediately.`,
       });
       setEmail("");
       setPassword("");
@@ -119,13 +146,19 @@ export function StaffSettings() {
 
   const resetPasswordMutation = useMutation({
     mutationFn: () => {
-      if (!resetTarget) throw new Error("No target selected");
-      return resetPasswordFn({ data: { userId: resetTarget.id, newPassword: newPasswordInput } });
+      if (!passwordTarget) throw new Error("No user selected");
+      return resetPasswordFn({ data: { userId: passwordTarget.id, newPassword: passwordInput.trim() } });
     },
     onSuccess: () => {
-      setMessage({ tone: "ok", text: `Password successfully updated for ${resetTarget?.email}.` });
-      setResetTarget(null);
-      setNewPasswordInput("");
+      const updatedEmail = passwordTarget?.email;
+      const newPwd = passwordInput.trim();
+      copyToClipboard(newPwd);
+      setMessage({
+        tone: "ok",
+        text: `Password reset successfully for ${updatedEmail} and copied to clipboard: ${newPwd}`,
+      });
+      setPasswordTarget((prev) => (prev ? { ...prev, hasExistingPassword: true } : null));
+      refresh();
     },
     onError: (error: Error) => setMessage({ tone: "error", text: error.message }),
   });
@@ -204,15 +237,35 @@ export function StaffSettings() {
                 </Select>
               </div>
               <div>
-                <Label className="text-xs text-muted-foreground">Password (min 8 chars)</Label>
-                <Input
-                  className="mt-1.5"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  type="password"
-                  placeholder="Initial password"
-                  autoComplete="new-password"
-                />
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-muted-foreground">Password</Label>
+                  <button
+                    type="button"
+                    onClick={() => setPassword(generateSecurePassword())}
+                    className="flex items-center gap-1 text-[11px] text-primary hover:underline"
+                  >
+                    <Sparkles className="size-3" /> Generate
+                  </button>
+                </div>
+                <div className="relative mt-1.5">
+                  <Input
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    type={showCreatePassword ? "text" : "password"}
+                    placeholder="Min 8 characters"
+                    autoComplete="new-password"
+                    className="pr-8"
+                  />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-0.5 top-0.5 size-8 text-muted-foreground hover:text-foreground"
+                    onClick={() => setShowCreatePassword(!showCreatePassword)}
+                  >
+                    {showCreatePassword ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                  </Button>
+                </div>
               </div>
               <div className="flex items-end">
                 <Button
@@ -272,7 +325,9 @@ export function StaffSettings() {
       <div className="overflow-x-auto rounded-lg border border-border bg-card">
         <div className="border-b border-border px-5 py-4">
           <h2 className="text-sm font-semibold">Users</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Change a role to move someone to a different part of the workflow.</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Change a role to move someone to a different part of the workflow.
+          </p>
         </div>
         {staff.isLoading ? <p className="px-5 py-6 text-sm text-muted-foreground">Loading…</p> : null}
         {staff.error ? <p className="px-5 py-6 text-sm text-destructive">{(staff.error as Error).message}</p> : null}
@@ -300,7 +355,7 @@ export function StaffSettings() {
                         .catch((error: Error) => setMessage({ tone: "error", text: error.message }));
                     }}
                   >
-                    <SelectTrigger className="w-[210px]"><SelectValue placeholder="Assign a role" /></SelectTrigger>
+                    <SelectTrigger className="w-[190px]"><SelectValue placeholder="Assign a role" /></SelectTrigger>
                     <SelectContent>{ROLES.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent>
                   </Select>
                 </td>
@@ -324,19 +379,25 @@ export function StaffSettings() {
                         disabled={copyExistingInviteMutation.isPending}
                         onClick={() => copyExistingInviteMutation.mutate(account.email)}
                       >
-                        <Copy className="size-3.5 mr-1" /> Link
+                        <Copy className="mr-1 size-3.5" /> Link
                       </Button>
                     ) : null}
                     <Button
                       size="sm"
                       variant="ghost"
-                      title="Set / Reset password"
+                      title="View prefilled password or reset password"
                       onClick={() => {
-                        setResetTarget({ id: account.id, email: account.email });
-                        setNewPasswordInput("");
+                        setPasswordTarget({
+                          id: account.id,
+                          email: account.email,
+                          hasExistingPassword: !!account.password,
+                        });
+                        // Prefill existing password if one exists
+                        setPasswordInput(account.password || "");
+                        setShowPassword(true);
                       }}
                     >
-                      <KeyRound className="size-3.5 mr-1" /> Password
+                      <KeyRound className="mr-1 size-3.5" /> Password
                     </Button>
                     <Button
                       size="sm"
@@ -358,32 +419,91 @@ export function StaffSettings() {
         </table>
       </div>
 
-      <Dialog open={!!resetTarget} onOpenChange={(open) => { if (!open) setResetTarget(null); }}>
-        <DialogContent>
+      <Dialog open={!!passwordTarget} onOpenChange={(open) => { if (!open) setPasswordTarget(null); }}>
+        <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Set password for staff member</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <KeyRound className="size-5 text-primary" />
+              Staff Password
+            </DialogTitle>
             <DialogDescription>
-              Set a new password for <span className="font-semibold text-foreground">{resetTarget?.email}</span>. They can use this to sign in immediately.
+              Account credentials for <span className="font-semibold text-foreground">{passwordTarget?.email}</span>.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <Label htmlFor="reset-new-password">New password</Label>
-            <Input
-              id="reset-new-password"
-              type="password"
-              placeholder="Minimum 8 characters"
-              value={newPasswordInput}
-              onChange={(e) => setNewPasswordInput(e.target.value)}
-              minLength={8}
-            />
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="staff-password-input" className="text-xs font-semibold">
+                  {passwordTarget?.hasExistingPassword ? "Current Password (prefilled)" : "New Password"}
+                </Label>
+                <div className="flex items-center gap-2">
+                  {passwordInput ? (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(passwordInput)}
+                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                      title="Copy password to clipboard"
+                    >
+                      {copied ? <Check className="size-3 text-emerald-600" /> : <Copy className="size-3" />}
+                      {copied ? "Copied" : "Copy"}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setPasswordInput(generateSecurePassword())}
+                    className="flex items-center gap-1 text-xs text-primary hover:underline"
+                    title="Generate a random secure password"
+                  >
+                    <Sparkles className="size-3" /> Generate new
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative">
+                <Input
+                  id="staff-password-input"
+                  type={showPassword ? "text" : "password"}
+                  placeholder={passwordTarget?.hasExistingPassword ? "Prefilled password" : "Enter minimum 8 characters"}
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  minLength={8}
+                  className="pr-10 font-mono text-sm"
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="absolute right-0.5 top-0.5 size-8 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowPassword(!showPassword)}
+                  title={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                </Button>
+              </div>
+
+              {passwordTarget?.hasExistingPassword ? (
+                <p className="text-[11px] text-muted-foreground">
+                  The existing password is prefilled above. You can copy it, or edit / generate a new one and click <strong>Reset password</strong>.
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  No password was previously tracked for this account. Enter or generate a password, then click <strong>Reset password</strong>.
+                </p>
+              )}
+            </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setResetTarget(null)}>Cancel</Button>
+
+          <DialogFooter className="flex sm:justify-between gap-2">
+            <Button variant="outline" onClick={() => setPasswordTarget(null)}>
+              Close
+            </Button>
             <Button
               onClick={() => resetPasswordMutation.mutate()}
-              disabled={resetPasswordMutation.isPending || newPasswordInput.length < 8}
+              disabled={resetPasswordMutation.isPending || passwordInput.trim().length < 8}
             >
-              {resetPasswordMutation.isPending ? <Loader2 className="size-4 animate-spin mr-1" /> : null} Save password
+              {resetPasswordMutation.isPending ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : <KeyRound className="mr-1.5 size-4" />}
+              Reset password
             </Button>
           </DialogFooter>
         </DialogContent>

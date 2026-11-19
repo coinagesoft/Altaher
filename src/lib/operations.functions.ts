@@ -720,7 +720,7 @@ export const setCandidateBlacklisted = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input) => z.object({ candidateId: z.string().uuid(), blacklisted: z.boolean() }).parse(input))
   .handler(async ({ data, context }) => {
-    await requireRole(context, ["Data Entry", "Recruiter", "Admin"]);
+    await requireRole(context, ["Super Admin"]);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data: candidate, error: readError } = await supabaseAdmin.from("candidates").select("status,current_project_id").eq("id", data.candidateId).single();
     if (readError || !candidate) throw new Error("Candidate not found");
@@ -1178,6 +1178,7 @@ export const listStaffAccounts = createServerFn({ method: "GET" })
         active: assignment ? assignment.is_active !== false : false,
         invited: !user.last_sign_in_at,
         createdAt: user.created_at,
+        password: (user.user_metadata?.["assigned_password"] as string | undefined) ?? null,
       };
     });
   });
@@ -1286,9 +1287,15 @@ export const resetStaffPassword = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await requireRole(context, ["Super Admin"]);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { error } = await supabaseAdmin.auth.admin.updateUserById(data.userId, { password: data.newPassword });
+    const { data: userRecord, error: fetchErr } = await supabaseAdmin.auth.admin.getUserById(data.userId);
+    if (fetchErr) throw new Error(fetchErr.message);
+    const existingMeta = userRecord.user?.user_metadata ?? {};
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(data.userId, {
+      password: data.newPassword,
+      user_metadata: { ...existingMeta, assigned_password: data.newPassword },
+    });
     if (error) throw new Error(error.message);
-    return { success: true };
+    return { success: true, newPassword: data.newPassword };
   });
 
 export const createStaffAccount = createServerFn({ method: "POST" })
@@ -1297,7 +1304,12 @@ export const createStaffAccount = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     await requireRole(context, ["Super Admin"]);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: created, error } = await supabaseAdmin.auth.admin.createUser({ email: data.email, password: data.password, email_confirm: true });
+    const { data: created, error } = await supabaseAdmin.auth.admin.createUser({
+      email: data.email,
+      password: data.password,
+      email_confirm: true,
+      user_metadata: { assigned_password: data.password },
+    });
     if (error) throw new Error(error.message);
     const userId = created.user?.id;
     if (!userId) throw new Error("Account could not be created");
@@ -1306,7 +1318,7 @@ export const createStaffAccount = createServerFn({ method: "POST" })
       ? await supabaseAdmin.from("user_roles").update({ role: data.role, is_active: true }).eq("id", existing.id)
       : await supabaseAdmin.from("user_roles").insert({ user_id: userId, role: data.role });
     if (result.error) throw new Error(result.error.message);
-    return { id: userId, email: data.email, role: data.role };
+    return { id: userId, email: data.email, role: data.role, password: data.password };
   });
 
 export const setStaffRole = createServerFn({ method: "POST" })
